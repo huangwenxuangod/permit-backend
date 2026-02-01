@@ -10,17 +10,53 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type IDPhotoResp struct {
-	Status              int    `json:"status"`
-	ImageBase64Standard string `json:"image_base64_standard"`
-	ImageBase64HD       string `json:"image_base64_hd"`
+	OK                   bool
+	ImageBase64Standard  string
+	ImageBase64HD        string
 }
 
 type AddBackgroundResp struct {
-	Status     int    `json:"status"`
-	ImageBase64 string `json:"image_base64"`
+	OK         bool
+	ImageBase64 string
+}
+
+func AddBackgroundFile(baseURL string, rgbaPNG []byte, colorHex string, dpi int) (AddBackgroundResp, error) {
+	var out AddBackgroundResp
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	fw, err := w.CreateFormFile("input_image", "rgba.png")
+	if err != nil {
+		return out, err
+	}
+	if _, err = fw.Write(rgbaPNG); err != nil {
+		return out, err
+	}
+	_ = w.WriteField("color", colorHex)
+	_ = w.WriteField("dpi", itoa(dpi))
+	if err := w.Close(); err != nil {
+		return out, err
+	}
+	req, err := http.NewRequest("POST", baseURL+"/add_background", body)
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	var m map[string]any
+	if err = json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return out, err
+	}
+	out.ImageBase64, _ = mString(m["image_base64"])
+	out.OK = parseStatus(m["status"])
+	return out, nil
 }
 
 func IDPhoto(baseURL, imagePath string, height, width, dpi int) (IDPhotoResp, error) {
@@ -57,9 +93,13 @@ func IDPhoto(baseURL, imagePath string, height, width, dpi int) (IDPhotoResp, er
 		return out, err
 	}
 	defer resp.Body.Close()
-	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	var m map[string]any
+	if err = json.NewDecoder(resp.Body).Decode(&m); err != nil {
 		return out, err
 	}
+	out.ImageBase64Standard, _ = mString(m["image_base64_standard"])
+	out.ImageBase64HD, _ = mString(m["image_base64_hd"])
+	out.OK = parseStatus(m["status"])
 	return out, nil
 }
 
@@ -83,16 +123,58 @@ func AddBackgroundBase64(baseURL, rgbaBase64, colorHex string, dpi int) (AddBack
 		return out, err
 	}
 	defer resp.Body.Close()
-	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	var m map[string]any
+	if err = json.NewDecoder(resp.Body).Decode(&m); err != nil {
 		return out, err
 	}
+	out.ImageBase64, _ = mString(m["image_base64"])
+	out.OK = parseStatus(m["status"])
 	return out, nil
 }
 
 func DecodeBase64(s string) ([]byte, error) {
+	if i := strings.Index(s, "base64,"); i >= 0 {
+		s = s[i+7:]
+	}
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\r", "")
+	if rem := len(s) % 4; rem != 0 {
+		s = s + strings.Repeat("=", 4-rem)
+	}
 	return base64.StdEncoding.DecodeString(s)
 }
 
 func itoa(i int) string {
 	return strconv.Itoa(i)
+}
+
+func mString(v any) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	switch t := v.(type) {
+	case string:
+		return t, true
+	default:
+		return "", false
+	}
+}
+
+func parseStatus(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return i != 0
+		}
+		return false
+	default:
+		return false
+	}
 }

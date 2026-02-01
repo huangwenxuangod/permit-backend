@@ -151,9 +151,13 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 
 	srcPath := s.objectKeyToPath(req.SourceObjectKey)
 	idp, err := algo.IDPhoto(s.cfg.AlgoURL, srcPath, req.HeightPx, req.WidthPx, req.DPI)
-	if err != nil || idp.Status != 1 {
+	if err != nil || !idp.OK {
 		t.Status = tasks.StatusFailed
-		t.ErrorMsg = "algo idphoto error"
+		if err != nil {
+			t.ErrorMsg = "algo idphoto error: " + err.Error()
+		} else {
+			t.ErrorMsg = "algo idphoto resp not ok"
+		}
 		t.UpdatedAt = time.Now().UTC()
 		s.store.Put(t)
 		s.json(w, r, http.StatusOK, t)
@@ -175,9 +179,13 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	for _, c := range req.Colors {
 		colorHex := colorHexOf(c)
 		bg, err := algo.AddBackgroundBase64(s.cfg.AlgoURL, rgbaB64, colorHex, req.DPI)
-		if err != nil || bg.Status != 1 {
+		if err != nil || !bg.OK {
 			t.Status = tasks.StatusFailed
-			t.ErrorMsg = "algo add_background error"
+			if err != nil {
+				t.ErrorMsg = "algo add_background error: " + err.Error()
+			} else {
+				t.ErrorMsg = "algo add_background resp not ok"
+			}
 			t.UpdatedAt = time.Now().UTC()
 			s.store.Put(t)
 			s.json(w, r, http.StatusOK, t)
@@ -186,7 +194,11 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		data, err := algo.DecodeBase64(bg.ImageBase64)
 		if err != nil {
 			t.Status = tasks.StatusFailed
-			t.ErrorMsg = "decode image error"
+			prefix := bg.ImageBase64
+			if len(prefix) > 32 {
+				prefix = prefix[:32]
+			}
+			t.ErrorMsg = "decode image error: " + prefix
 			t.UpdatedAt = time.Now().UTC()
 			s.store.Put(t)
 			s.json(w, r, http.StatusOK, t)

@@ -39,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	fs := http.StripPrefix("/assets/", http.FileServer(http.Dir(s.cfg.AssetsDir)))
 	s.mux.Handle("/assets/", fs)
+	s.mux.HandleFunc("/api/specs", s.handleSpecs)
 	s.mux.HandleFunc("/api/upload", s.handleUpload)
 	s.mux.HandleFunc("/api/tasks", s.handleCreateTask)
 	s.mux.HandleFunc("/api/tasks/", s.handleGetTask)
@@ -108,6 +109,42 @@ type createTaskReq struct {
 	DPI             int      `json:"dpi"`
 }
 
+type Spec struct {
+	Code     string   `json:"code"`
+	Name     string   `json:"name"`
+	WidthPx  int      `json:"widthPx"`
+	HeightPx int      `json:"heightPx"`
+	DPI      int      `json:"dpi"`
+	BgColors []string `json:"bgColors"`
+}
+
+func (s *Server) handleSpecs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
+		return
+	}
+	s.json(w, r, http.StatusOK, s.defaultSpecs())
+}
+
+func (s *Server) defaultSpecs() []Spec {
+	return []Spec{
+		{Code: "passport", Name: "护照", WidthPx: 354, HeightPx: 472, DPI: 300, BgColors: []string{"white", "blue", "red"}},
+		{Code: "cn_1inch", Name: "一寸", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: []string{"white", "blue", "red"}},
+		{Code: "cn_2inch", Name: "二寸", WidthPx: 413, HeightPx: 626, DPI: 300, BgColors: []string{"white", "blue", "red"}},
+	}
+}
+
+func (s *Server) findSpec(code string) Spec {
+	code = strings.TrimSpace(strings.ToLower(code))
+	specs := s.defaultSpecs()
+	for _, sp := range specs {
+		if strings.ToLower(sp.Code) == code {
+			return sp
+		}
+	}
+	return specs[0]
+}
+
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
@@ -122,17 +159,18 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "sourceObjectKey required")
 		return
 	}
+	spec := s.findSpec(orDefault(req.SpecCode, "passport"))
 	if req.WidthPx == 0 {
-		req.WidthPx = 295
+		req.WidthPx = spec.WidthPx
 	}
 	if req.HeightPx == 0 {
-		req.HeightPx = 413
+		req.HeightPx = spec.HeightPx
 	}
 	if req.DPI == 0 {
-		req.DPI = 300
+		req.DPI = spec.DPI
 	}
 	if len(req.Colors) == 0 {
-		req.Colors = []string{"white", "blue"}
+		req.Colors = spec.BgColors
 	}
 
 	taskID := randomID()

@@ -105,32 +105,43 @@
 - `/assets/{taskId}/{color}.jpg`
 - 说明：直接访问生成图片；生产建议改为带签名下载
 
-### 7. 订单创建（预留）
+### 7. 订单创建（V1 简化）
 - `POST /api/orders`
 - 请求：
 ```json
-{"taskId":"...","amountCents":990,"channel":"wechat"}
+{
+  "taskId":"...",
+  "items":[{"type":"electronic","qty":1},{"type":"layout","qty":1}],
+  "city":"广州",
+  "remark":"",
+  "amountCents":2500,
+  "channel":"wechat"
+}
 ```
 - 响应：
 ```json
 {"orderId":"...","status":"created"}
 ```
 
-### 8. 支付下单（微信/抖音，预留）
+### 8. 支付下单（V1 简化）
 - `POST /api/pay/wechat`
 - `POST /api/pay/douyin`
 - 请求：
 ```json
 {"orderId":"..."}
 ```
-- 响应（示例）：
+- 响应（示例，开发阶段可使用 mock）：
 ```json
-{"orderId":"...","payParams":{"appId":"...","nonceStr":"...","timeStamp":"...","signType":"...","paySign":"..."}}
+{"orderId":"...","payParams":{"type":"mock","nonceStr":"mock-nonce","timeStamp":"1738425600","signType":"MD5","paySign":"mock-sign"}}
 ```
 
-### 9. 支付回调（预留）
+### 9. 支付回调（V1 简化）
 - `POST /api/pay/callback`
-- 行为：验签、幂等记录、更新订单状态
+- 行为：更新订单状态为 `paid` 或 `pending`；开发阶段可跳过验签（`signature_ok=true`）
+- 请求（示例）：
+```json
+{"orderId":"...","status":"paid","raw":"...","signature_ok":true}
+```
 - 响应：
 ```json
 {"ok":true}
@@ -149,8 +160,59 @@
 - `GET /api/download/file?token=...`
 - 响应：临时下载 URL 或文件流
 
-## 分页与过滤（用于任务/订单列表，预留）
-- Query：`?page=1&pageSize=20&status=done&specCode=passport`
+### 11. 订单列表（V1）
+- `GET /api/orders`
+- 响应：
+```json
+{
+  "items":[
+    {"orderId":"...","taskId":"...","items":[{"type":"electronic","qty":1}],"amountCents":2500,"channel":"wechat","status":"paid","createdAt":"...","updatedAt":"..."}
+  ],
+  "page":1,"pageSize":20,"total":1
+}
+```
+
+### 12. 订单详情（可选）
+- `GET /api/orders/{id}`
+- 响应：
+```json
+{"orderId":"...","taskId":"...","items":[{"type":"layout","qty":1}],"amountCents":2500,"channel":"wechat","status":"pending","createdAt":"...","updatedAt":"..."}
+```
+
+## 分页与过滤（用于任务/订单列表）
+- 任务列表 Query：`?page=1&pageSize=20&status=done&specCode=passport`
+- 订单列表 Query：`?page=1&pageSize=20&status=paid&channel=wechat`
+
+## 接口实例（WeChat 优先，最简可跑）
+
+### 创建订单（curl）
+```bash
+curl -X POST http://localhost:8080/api/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "taskId":"8d1587000cab594ecd6b0ddc213866e0",
+    "items":[{"type":"electronic","qty":1},{"type":"layout","qty":1}],
+    "city":"广州",
+    "remark":"",
+    "amountCents":2500,
+    "channel":"wechat"
+  }'
+```
+
+### 支付下单（curl）
+```bash
+curl -X POST http://localhost:8080/api/pay/wechat \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: dev-123456" \
+  -d '{"orderId":"ORDER-001"}'
+```
+
+### 模拟支付回调（开发阶段）
+```bash
+curl -X POST http://localhost:8080/api/pay/callback \
+  -H "Content-Type: application/json" \
+  -d '{"orderId":"ORDER-001","status":"paid","raw":"mock","signature_ok":true}'
+```
 
 ## 幂等与回调约定
 - Header：`Idempotency-Key`（支付/回调必传）

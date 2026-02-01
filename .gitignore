@@ -1,0 +1,29 @@
+# Go build outputs
+/bin/
+/build/
+/dist/
+*.exe
+*.dll
+*.test
+*.out
+*.log
+
+# Dependency and workspace files
+/vendor/
+/go.work
+/go.work.sum
+
+# OS & editor
+/.DS_Store
+/Thumbs.db
+/.vscode/
+/.idea/
+
+# Environment files
+/.env
+/.env.local
+
+# Generated assets & uploads (dev)
+/assets/
+/uploads/
+/tmp/

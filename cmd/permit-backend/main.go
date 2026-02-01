@@ -32,6 +32,10 @@ func main() {
 		JWTSecret:  *jwtSecret,
 		LogJSON:    *logJSON,
 		AlgoURL:    envDefaults.AlgoURL,
+		PayMock:    envDefaults.PayMock,
+		WechatAppID: envDefaults.WechatAppID,
+		WechatMchID: envDefaults.WechatMchID,
+		WechatNotifyURL: envDefaults.WechatNotifyURL,
 	}
 
 	ensureDir(cfg.AssetsDir)

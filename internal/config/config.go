@@ -13,6 +13,10 @@ type Config struct {
 	JWTSecret  string
 	LogJSON    bool
 	AlgoURL    string
+	PayMock    bool
+	WechatAppID string
+	WechatMchID string
+	WechatNotifyURL string
 }
 
 func Default() Config {
@@ -24,6 +28,10 @@ func Default() Config {
 		JWTSecret:  "",
 		LogJSON:    true,
 		AlgoURL:    "http://127.0.0.1:8080",
+		PayMock:    true,
+		WechatAppID: "",
+		WechatMchID: "",
+		WechatNotifyURL: "",
 	}
 }
 
@@ -59,6 +67,23 @@ func fromEnv(c Config) Config {
 	}
 	if v := os.Getenv("PERMIT_ALGO_URL"); v != "" {
 		c.AlgoURL = v
+	}
+	if v := os.Getenv("PERMIT_PAY_MOCK"); v != "" {
+		switch v {
+		case "1", "true", "TRUE":
+			c.PayMock = true
+		case "0", "false", "FALSE":
+			c.PayMock = false
+		}
+	}
+	if v := os.Getenv("PERMIT_WECHAT_APPID"); v != "" {
+		c.WechatAppID = v
+	}
+	if v := os.Getenv("PERMIT_WECHAT_MCHID"); v != "" {
+		c.WechatMchID = v
+	}
+	if v := os.Getenv("PERMIT_WECHAT_NOTIFY_URL"); v != "" {
+		c.WechatNotifyURL = v
 	}
 	return c
 }

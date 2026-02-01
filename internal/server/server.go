@@ -10,6 +10,8 @@ import (
 	"time"
 	"crypto/rand"
 	"encoding/hex"
+	"sync"
+	"strconv"
 
 	"permit-backend/internal/algo"
 	"permit-backend/internal/config"
@@ -20,6 +22,8 @@ type Server struct {
 	cfg   config.Config
 	store *tasks.Store
 	mux   *http.ServeMux
+	orders map[string]*Order
+	ordersMu sync.RWMutex
 }
 
 func New(cfg config.Config) *Server {
@@ -27,6 +31,7 @@ func New(cfg config.Config) *Server {
 		cfg:   cfg,
 		store: tasks.NewStore(),
 		mux:   http.NewServeMux(),
+		orders: make(map[string]*Order),
 	}
 	s.routes()
 	return s
@@ -44,6 +49,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/tasks", s.handleCreateTask)
 	s.mux.HandleFunc("/api/tasks/", s.handleGetTask)
 	s.mux.HandleFunc("/api/download/", s.handleDownloadInfo)
+	s.mux.HandleFunc("/api/orders", s.handleOrders)
+	s.mux.HandleFunc("/api/orders/", s.handleGetOrder)
+	s.mux.HandleFunc("/api/pay/wechat", s.handlePayWechat)
+	s.mux.HandleFunc("/api/pay/douyin", s.handlePayDouyin)
+	s.mux.HandleFunc("/api/pay/callback", s.handlePayCallback)
 }
 
 func (s *Server) cors(next http.Handler) http.Handler {
@@ -118,6 +128,43 @@ type Spec struct {
 	BgColors []string `json:"bgColors"`
 }
 
+type OrderStatus string
+
+const (
+	OrderCreated  OrderStatus = "created"
+	OrderPending  OrderStatus = "pending"
+	OrderPaid     OrderStatus = "paid"
+	OrderCanceled OrderStatus = "canceled"
+	OrderRefunded OrderStatus = "refunded"
+)
+
+type OrderItem struct {
+	Type string `json:"type"`
+	Qty  int    `json:"qty"`
+}
+
+type Order struct {
+	OrderID     string       `json:"orderId"`
+	TaskID      string       `json:"taskId"`
+	Items       []OrderItem  `json:"items"`
+	City        string       `json:"city"`
+	Remark      string       `json:"remark"`
+	AmountCents int          `json:"amountCents"`
+	Channel     string       `json:"channel"`
+	Status      OrderStatus  `json:"status"`
+	CreatedAt   time.Time    `json:"createdAt"`
+	UpdatedAt   time.Time    `json:"updatedAt"`
+}
+
+type createOrderReq struct {
+	TaskID      string      `json:"taskId"`
+	Items       []OrderItem `json:"items"`
+	City        string      `json:"city"`
+	Remark      string      `json:"remark"`
+	AmountCents int         `json:"amountCents"`
+	Channel     string      `json:"channel"`
+}
+
 func (s *Server) handleSpecs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
@@ -145,6 +192,191 @@ func (s *Server) findSpec(code string) Spec {
 	return specs[0]
 }
 
+func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var req createOrderReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+			return
+		}
+		if req.TaskID == "" {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", "taskId required")
+			return
+		}
+		if _, ok := s.store.Get(req.TaskID); !ok {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", "task not found")
+			return
+		}
+		id := randomID()
+		now := time.Now().UTC()
+		o := &Order{
+			OrderID:     id,
+			TaskID:      req.TaskID,
+			Items:       req.Items,
+			City:        req.City,
+			Remark:      req.Remark,
+			AmountCents: req.AmountCents,
+			Channel:     orDefault(req.Channel, "wechat"),
+			Status:      OrderCreated,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		s.ordersMu.Lock()
+		s.orders[id] = o
+		s.ordersMu.Unlock()
+		s.json(w, r, http.StatusOK, map[string]any{"orderId": id, "status": string(o.Status)})
+		return
+	}
+	if r.Method == http.MethodGet {
+		q := r.URL.Query()
+		page := 1
+		pageSize := 20
+		if v := q.Get("page"); v != "" {
+			if i, err := strconv.Atoi(v); err == nil && i > 0 {
+				page = i
+			}
+		}
+		if v := q.Get("pageSize"); v != "" {
+			if i, err := strconv.Atoi(v); err == nil && i > 0 {
+				pageSize = i
+			}
+		}
+		s.ordersMu.RLock()
+		all := make([]Order, 0, len(s.orders))
+		for _, o := range s.orders {
+			all = append(all, *o)
+		}
+		s.ordersMu.RUnlock()
+		total := len(all)
+		start := (page - 1) * pageSize
+		if start > total {
+			start = total
+		}
+		end := start + pageSize
+		if end > total {
+			end = total
+		}
+		items := all[start:end]
+		s.json(w, r, http.StatusOK, map[string]any{"items": items, "page": page, "pageSize": pageSize, "total": total})
+		return
+	}
+	s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET/POST accepted")
+}
+
+func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/orders/")
+	if id == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "order id required")
+		return
+	}
+	s.ordersMu.RLock()
+	o := s.orders[id]
+	s.ordersMu.RUnlock()
+	if o == nil {
+		s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
+		return
+	}
+	s.json(w, r, http.StatusOK, o)
+}
+
+type payReq struct {
+	OrderID string `json:"orderId"`
+}
+
+func (s *Server) handlePayWechat(w http.ResponseWriter, r *http.Request) {
+	s.handlePay(w, r, "wechat")
+}
+
+func (s *Server) handlePayDouyin(w http.ResponseWriter, r *http.Request) {
+	s.handlePay(w, r, "douyin")
+}
+
+func (s *Server) handlePay(w http.ResponseWriter, r *http.Request, channel string) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req payReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if req.OrderID == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "orderId required")
+		return
+	}
+	s.ordersMu.Lock()
+	o := s.orders[req.OrderID]
+	if o == nil {
+		s.ordersMu.Unlock()
+		s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
+		return
+	}
+	o.Channel = channel
+	o.Status = OrderPending
+	o.UpdatedAt = time.Now().UTC()
+	s.ordersMu.Unlock()
+	if !s.cfg.PayMock {
+		s.err(w, r, http.StatusNotImplemented, "NotImplemented", "real payment not configured")
+		return
+	}
+	prepayID := "mock-" + randomID()
+	p := map[string]any{
+		"appId":     s.cfg.WechatAppID,
+		"timeStamp": strconv.FormatInt(time.Now().Unix(), 10),
+		"nonceStr":  randomID(),
+		"package":   "prepay_id=" + prepayID,
+		"signType":  "RSA",
+		"paySign":   "MOCK_SIGN",
+	}
+	s.json(w, r, http.StatusOK, map[string]any{"orderId": req.OrderID, "payParams": p})
+}
+
+type payCallbackReq struct {
+	OrderID     string `json:"orderId"`
+	Status      string `json:"status"`
+	Raw         string `json:"raw"`
+	SignatureOK bool   `json:"signature_ok"`
+}
+
+func (s *Server) handlePayCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req payCallbackReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if req.OrderID == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "orderId required")
+		return
+	}
+	s.ordersMu.Lock()
+	o := s.orders[req.OrderID]
+	if o == nil {
+		s.ordersMu.Unlock()
+		s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
+		return
+	}
+	switch strings.ToLower(req.Status) {
+	case "paid":
+		o.Status = OrderPaid
+	case "pending":
+		o.Status = OrderPending
+	case "canceled":
+		o.Status = OrderCanceled
+	default:
+	}
+	o.UpdatedAt = time.Now().UTC()
+	s.ordersMu.Unlock()
+	s.json(w, r, http.StatusOK, map[string]any{"ok": true})
+}
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")

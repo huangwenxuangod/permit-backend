@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"permit-backend/internal/config"
 	"permit-backend/internal/env"
+	"permit-backend/internal/server"
 )
 
 func main() {
@@ -29,6 +31,7 @@ func main() {
 		UploadsDir: *uploads,
 		JWTSecret:  *jwtSecret,
 		LogJSON:    *logJSON,
+		AlgoURL:    envDefaults.AlgoURL,
 	}
 
 	ensureDir(cfg.AssetsDir)
@@ -36,6 +39,11 @@ func main() {
 
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	fmt.Println(string(b))
+
+	srv := server.New(cfg)
+	addr := fmt.Sprintf(":%d", cfg.Port)
+	fmt.Printf("Listening on http://127.0.0.1:%d\n", cfg.Port)
+	_ = http.ListenAndServe(addr, srv.Handler())
 }
 
 func ensureDir(p string) {

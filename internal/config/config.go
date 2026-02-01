@@ -12,16 +12,18 @@ type Config struct {
 	UploadsDir string
 	JWTSecret  string
 	LogJSON    bool
+	AlgoURL    string
 }
 
 func Default() Config {
 	return Config{
 		Env:        "dev",
-		Port:       8080,
+		Port:       5000,
 		AssetsDir:  "./assets",
 		UploadsDir: "./uploads",
 		JWTSecret:  "",
 		LogJSON:    true,
+		AlgoURL:    "http://127.0.0.1:8080",
 	}
 }
 
@@ -54,6 +56,9 @@ func fromEnv(c Config) Config {
 		case "0", "false", "FALSE":
 			c.LogJSON = false
 		}
+	}
+	if v := os.Getenv("PERMIT_ALGO_URL"); v != "" {
+		c.AlgoURL = v
 	}
 	return c
 }

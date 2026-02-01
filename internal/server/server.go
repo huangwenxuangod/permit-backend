@@ -7,31 +7,59 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 	"crypto/rand"
 	"encoding/hex"
-	"sync"
 	"strconv"
 
 	"permit-backend/internal/algo"
 	"permit-backend/internal/config"
-	"permit-backend/internal/tasks"
+	"permit-backend/internal/domain"
+	"permit-backend/internal/usecase"
+	"permit-backend/internal/infrastructure/asset"
+	"permit-backend/internal/infrastructure/repo"
 )
 
 type Server struct {
 	cfg   config.Config
-	store *tasks.Store
 	mux   *http.ServeMux
-	orders map[string]*Order
-	ordersMu sync.RWMutex
+	taskSvc  *usecase.TaskService
+	orderSvc *usecase.OrderService
 }
 
 func New(cfg config.Config) *Server {
-	s := &Server{
-		cfg:   cfg,
-		store: tasks.NewStore(),
-		mux:   http.NewServeMux(),
-		orders: make(map[string]*Order),
+	s := &Server{cfg: cfg, mux: http.NewServeMux()}
+
+	var taskRepo usecase.TaskRepo
+	var orderRepo usecase.OrderRepo
+
+	if strings.TrimSpace(cfg.PostgresDSN) != "" {
+		pg, err := repo.NewPostgresRepo(cfg.PostgresDSN)
+		if err == nil {
+			taskRepo = pg
+			orderRepo = &pgOrderRepo{pg: pg}
+		}
+	}
+	if taskRepo == nil {
+		taskRepo = repo.NewMemoryTaskRepo()
+	}
+	if orderRepo == nil {
+		orderRepo = repo.NewMemoryOrderRepo()
+	}
+
+	fs := asset.NewFSWriter(cfg.AssetsDir)
+	al := algoAdapter{}
+
+	s.taskSvc = &usecase.TaskService{
+		Repo:       taskRepo,
+		Assets:     fs,
+		Algo:       al,
+		AlgoURL:    cfg.AlgoURL,
+		UploadsDir: cfg.UploadsDir,
+	}
+	s.orderSvc = &usecase.OrderService{
+		Repo:        orderRepo,
+		PayMock:     cfg.PayMock,
+		WechatAppID: cfg.WechatAppID,
 	}
 	s.routes()
 	return s
@@ -128,37 +156,9 @@ type Spec struct {
 	BgColors []string `json:"bgColors"`
 }
 
-type OrderStatus string
-
-const (
-	OrderCreated  OrderStatus = "created"
-	OrderPending  OrderStatus = "pending"
-	OrderPaid     OrderStatus = "paid"
-	OrderCanceled OrderStatus = "canceled"
-	OrderRefunded OrderStatus = "refunded"
-)
-
-type OrderItem struct {
-	Type string `json:"type"`
-	Qty  int    `json:"qty"`
-}
-
-type Order struct {
-	OrderID     string       `json:"orderId"`
-	TaskID      string       `json:"taskId"`
-	Items       []OrderItem  `json:"items"`
-	City        string       `json:"city"`
-	Remark      string       `json:"remark"`
-	AmountCents int          `json:"amountCents"`
-	Channel     string       `json:"channel"`
-	Status      OrderStatus  `json:"status"`
-	CreatedAt   time.Time    `json:"createdAt"`
-	UpdatedAt   time.Time    `json:"updatedAt"`
-}
-
 type createOrderReq struct {
 	TaskID      string      `json:"taskId"`
-	Items       []OrderItem `json:"items"`
+	Items       []domain.OrderItem `json:"items"`
 	City        string      `json:"city"`
 	Remark      string      `json:"remark"`
 	AmountCents int         `json:"amountCents"`
@@ -203,27 +203,19 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 			s.err(w, r, http.StatusBadRequest, "BadRequest", "taskId required")
 			return
 		}
-		if _, ok := s.store.Get(req.TaskID); !ok {
+		if _, ok := s.taskSvc.Repo.Get(req.TaskID); !ok {
 			s.err(w, r, http.StatusBadRequest, "BadRequest", "task not found")
 			return
 		}
-		id := randomID()
-		now := time.Now().UTC()
-		o := &Order{
-			OrderID:     id,
+		o := &domain.Order{
 			TaskID:      req.TaskID,
 			Items:       req.Items,
 			City:        req.City,
 			Remark:      req.Remark,
 			AmountCents: req.AmountCents,
 			Channel:     orDefault(req.Channel, "wechat"),
-			Status:      OrderCreated,
-			CreatedAt:   now,
-			UpdatedAt:   now,
 		}
-		s.ordersMu.Lock()
-		s.orders[id] = o
-		s.ordersMu.Unlock()
+		id, _ := s.orderSvc.Create(o)
 		s.json(w, r, http.StatusOK, map[string]any{"orderId": id, "status": string(o.Status)})
 		return
 	}
@@ -241,22 +233,7 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 				pageSize = i
 			}
 		}
-		s.ordersMu.RLock()
-		all := make([]Order, 0, len(s.orders))
-		for _, o := range s.orders {
-			all = append(all, *o)
-		}
-		s.ordersMu.RUnlock()
-		total := len(all)
-		start := (page - 1) * pageSize
-		if start > total {
-			start = total
-		}
-		end := start + pageSize
-		if end > total {
-			end = total
-		}
-		items := all[start:end]
+		items, total := s.orderSvc.Repo.List(page, pageSize)
 		s.json(w, r, http.StatusOK, map[string]any{"items": items, "page": page, "pageSize": pageSize, "total": total})
 		return
 	}
@@ -273,10 +250,8 @@ func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "order id required")
 		return
 	}
-	s.ordersMu.RLock()
-	o := s.orders[id]
-	s.ordersMu.RUnlock()
-	if o == nil {
+	o, ok := s.orderSvc.Repo.Get(id)
+	if !ok {
 		s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
 		return
 	}
@@ -309,29 +284,14 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request, channel strin
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "orderId required")
 		return
 	}
-	s.ordersMu.Lock()
-	o := s.orders[req.OrderID]
-	if o == nil {
-		s.ordersMu.Unlock()
-		s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
-		return
-	}
-	o.Channel = channel
-	o.Status = OrderPending
-	o.UpdatedAt = time.Now().UTC()
-	s.ordersMu.Unlock()
 	if !s.cfg.PayMock {
 		s.err(w, r, http.StatusNotImplemented, "NotImplemented", "real payment not configured")
 		return
 	}
-	prepayID := "mock-" + randomID()
-	p := map[string]any{
-		"appId":     s.cfg.WechatAppID,
-		"timeStamp": strconv.FormatInt(time.Now().Unix(), 10),
-		"nonceStr":  randomID(),
-		"package":   "prepay_id=" + prepayID,
-		"signType":  "RSA",
-		"paySign":   "MOCK_SIGN",
+	p, err := s.orderSvc.Pay(req.OrderID, channel)
+	if err != nil {
+		s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
+		return
 	}
 	s.json(w, r, http.StatusOK, map[string]any{"orderId": req.OrderID, "payParams": p})
 }
@@ -357,24 +317,7 @@ func (s *Server) handlePayCallback(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "orderId required")
 		return
 	}
-	s.ordersMu.Lock()
-	o := s.orders[req.OrderID]
-	if o == nil {
-		s.ordersMu.Unlock()
-		s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
-		return
-	}
-	switch strings.ToLower(req.Status) {
-	case "paid":
-		o.Status = OrderPaid
-	case "pending":
-		o.Status = OrderPending
-	case "canceled":
-		o.Status = OrderCanceled
-	default:
-	}
-	o.UpdatedAt = time.Now().UTC()
-	s.ordersMu.Unlock()
+	_ = s.orderSvc.Callback(req.OrderID, strings.ToLower(req.Status))
 	s.json(w, r, http.StatusOK, map[string]any{"ok": true})
 }
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -404,90 +347,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	if len(req.Colors) == 0 {
 		req.Colors = spec.BgColors
 	}
-
-	taskID := randomID()
-	now := time.Now().UTC()
-	t := &tasks.Task{
-		ID:              taskID,
-		UserID:          "dev-user",
-		SpecCode:        orDefault(req.SpecCode, "passport"),
-		SourceObjectKey: req.SourceObjectKey,
-		Status:          tasks.StatusProcessing,
-		ProcessedUrls:   map[string]string{},
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	s.store.Put(t)
-
-	srcPath := s.objectKeyToPath(req.SourceObjectKey)
-	idp, err := algo.IDPhoto(s.cfg.AlgoURL, srcPath, req.HeightPx, req.WidthPx, req.DPI)
-	if err != nil || !idp.OK {
-		t.Status = tasks.StatusFailed
-		if err != nil {
-			t.ErrorMsg = "algo idphoto error: " + err.Error()
-		} else {
-			t.ErrorMsg = "algo idphoto resp not ok"
-		}
-		t.UpdatedAt = time.Now().UTC()
-		s.store.Put(t)
-		s.json(w, r, http.StatusOK, t)
-		return
-	}
-	rgbaB64 := idp.ImageBase64Standard
-	if rgbaB64 == "" {
-		rgbaB64 = idp.ImageBase64HD
-	}
-	assetsDir := filepath.Join(s.cfg.AssetsDir, taskID)
-	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
-		t.Status = tasks.StatusFailed
-		t.ErrorMsg = "cannot create assets"
-		t.UpdatedAt = time.Now().UTC()
-		s.store.Put(t)
-		s.json(w, r, http.StatusOK, t)
-		return
-	}
-	for _, c := range req.Colors {
-		colorHex := colorHexOf(c)
-		bg, err := algo.AddBackgroundBase64(s.cfg.AlgoURL, rgbaB64, colorHex, req.DPI)
-		if err != nil || !bg.OK {
-			t.Status = tasks.StatusFailed
-			if err != nil {
-				t.ErrorMsg = "algo add_background error: " + err.Error()
-			} else {
-				t.ErrorMsg = "algo add_background resp not ok"
-			}
-			t.UpdatedAt = time.Now().UTC()
-			s.store.Put(t)
-			s.json(w, r, http.StatusOK, t)
-			return
-		}
-		data, err := algo.DecodeBase64(bg.ImageBase64)
-		if err != nil {
-			t.Status = tasks.StatusFailed
-			prefix := bg.ImageBase64
-			if len(prefix) > 32 {
-				prefix = prefix[:32]
-			}
-			t.ErrorMsg = "decode image error: " + prefix
-			t.UpdatedAt = time.Now().UTC()
-			s.store.Put(t)
-			s.json(w, r, http.StatusOK, t)
-			return
-		}
-		out := filepath.Join(assetsDir, c+".jpg")
-		if err := os.WriteFile(out, data, 0o644); err != nil {
-			t.Status = tasks.StatusFailed
-			t.ErrorMsg = "write image error"
-			t.UpdatedAt = time.Now().UTC()
-			s.store.Put(t)
-			s.json(w, r, http.StatusOK, t)
-			return
-		}
-		t.ProcessedUrls[c] = "/assets/" + taskID + "/" + c + ".jpg"
-	}
-	t.Status = tasks.StatusDone
-	t.UpdatedAt = time.Now().UTC()
-	s.store.Put(t)
+	t, _ := s.taskSvc.CreateTask("dev-user", orDefault(req.SpecCode, "passport"), req.SourceObjectKey, req.Colors, req.WidthPx, req.HeightPx, req.DPI, colorHexOf)
 	s.json(w, r, http.StatusOK, t)
 }
 
@@ -501,7 +361,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "task id required")
 		return
 	}
-	t, ok := s.store.Get(id)
+	t, ok := s.taskSvc.Repo.Get(id)
 	if !ok {
 		s.err(w, r, http.StatusNotFound, "NotFound", "task not found")
 		return
@@ -519,8 +379,8 @@ func (s *Server) handleDownloadInfo(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "task id required")
 		return
 	}
-	t, ok := s.store.Get(id)
-	if !ok || t.Status != tasks.StatusDone {
+	t, ok := s.taskSvc.Repo.Get(id)
+	if !ok || t.Status != domain.StatusDone {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "task not ready")
 		return
 	}
@@ -529,13 +389,6 @@ func (s *Server) handleDownloadInfo(w http.ResponseWriter, r *http.Request) {
 		"urls":      t.ProcessedUrls,
 		"expiresIn": 600,
 	})
-}
-
-func (s *Server) objectKeyToPath(objectKey string) string {
-	if strings.HasPrefix(objectKey, "uploads/") {
-		return filepath.Join(s.cfg.UploadsDir, strings.TrimPrefix(objectKey, "uploads/"))
-	}
-	return filepath.Join(s.cfg.UploadsDir, objectKey)
 }
 
 func validImageName(name string) bool {
@@ -598,3 +451,18 @@ func colorHexOf(name string) string {
 		return "ffffff"
 	}
 }
+
+type algoAdapter struct{}
+
+func (algoAdapter) IDPhoto(baseURL, imagePath string, height, width, dpi int) (algo.IDPhotoResp, error) {
+	return algo.IDPhoto(baseURL, imagePath, height, width, dpi)
+}
+func (algoAdapter) AddBackgroundBase64(baseURL, rgbaBase64, colorHex string, dpi int) (algo.AddBackgroundResp, error) {
+	return algo.AddBackgroundBase64(baseURL, rgbaBase64, colorHex, dpi)
+}
+
+type pgOrderRepo struct{ pg *repo.PostgresRepo }
+
+func (p *pgOrderRepo) Put(o *domain.Order) error { return p.pg.PutOrder(o) }
+func (p *pgOrderRepo) Get(id string) (*domain.Order, bool) { return p.pg.GetOrder(id) }
+func (p *pgOrderRepo) List(page, pageSize int) ([]domain.Order, int) { return p.pg.ListOrders(page, pageSize) }

@@ -17,6 +17,7 @@ type Config struct {
 	WechatAppID string
 	WechatMchID string
 	WechatNotifyURL string
+	PostgresDSN string
 }
 
 func Default() Config {
@@ -32,6 +33,7 @@ func Default() Config {
 		WechatAppID: "",
 		WechatMchID: "",
 		WechatNotifyURL: "",
+		PostgresDSN: "",
 	}
 }
 
@@ -84,6 +86,9 @@ func fromEnv(c Config) Config {
 	}
 	if v := os.Getenv("PERMIT_WECHAT_NOTIFY_URL"); v != "" {
 		c.WechatNotifyURL = v
+	}
+	if v := os.Getenv("POSTGRES_DSN"); v != "" {
+		c.PostgresDSN = v
 	}
 	return c
 }

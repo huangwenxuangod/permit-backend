@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
 	"permit-backend/internal/algo"
 	"permit-backend/internal/config"
 	"permit-backend/internal/domain"
@@ -21,13 +22,13 @@ import (
 
 type Server struct {
 	cfg   config.Config
-	mux   *http.ServeMux
+	engine *gin.Engine
 	taskSvc  *usecase.TaskService
 	orderSvc *usecase.OrderService
 }
 
 func New(cfg config.Config) *Server {
-	s := &Server{cfg: cfg, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg}
 
 	var taskRepo usecase.TaskRepo
 	var orderRepo usecase.OrderRepo
@@ -61,40 +62,50 @@ func New(cfg config.Config) *Server {
 		PayMock:     cfg.PayMock,
 		WechatAppID: cfg.WechatAppID,
 	}
-	s.routes()
+	s.engine = gin.New()
+	s.engine.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	})
+	s.routesGin()
 	return s
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.cors(s.mux)
+	return s.engine
 }
 
-func (s *Server) routes() {
-	fs := http.StripPrefix("/assets/", http.FileServer(http.Dir(s.cfg.AssetsDir)))
-	s.mux.Handle("/assets/", fs)
-	s.mux.HandleFunc("/api/specs", s.handleSpecs)
-	s.mux.HandleFunc("/api/upload", s.handleUpload)
-	s.mux.HandleFunc("/api/tasks", s.handleCreateTask)
-	s.mux.HandleFunc("/api/tasks/", s.handleGetTask)
-	s.mux.HandleFunc("/api/download/", s.handleDownloadInfo)
-	s.mux.HandleFunc("/api/orders", s.handleOrders)
-	s.mux.HandleFunc("/api/orders/", s.handleGetOrder)
-	s.mux.HandleFunc("/api/pay/wechat", s.handlePayWechat)
-	s.mux.HandleFunc("/api/pay/douyin", s.handlePayDouyin)
-	s.mux.HandleFunc("/api/pay/callback", s.handlePayCallback)
-}
-
-func (s *Server) cors(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
+func (s *Server) routesGin() {
+	s.engine.Static("/assets", s.cfg.AssetsDir)
+	s.engine.GET("/api/specs", func(c *gin.Context) { s.handleSpecs(c.Writer, c.Request) })
+	s.engine.POST("/api/upload", func(c *gin.Context) { s.handleUpload(c.Writer, c.Request) })
+	s.engine.POST("/api/tasks", func(c *gin.Context) { s.handleCreateTask(c.Writer, c.Request) })
+	s.engine.GET("/api/tasks/:id", func(c *gin.Context) {
+		r := c.Request.Clone(c.Request.Context())
+		r.URL.Path = "/api/tasks/" + c.Param("id")
+		s.handleGetTask(c.Writer, r)
 	})
+	s.engine.GET("/api/download/:id", func(c *gin.Context) {
+		r := c.Request.Clone(c.Request.Context())
+		r.URL.Path = "/api/download/" + c.Param("id")
+		s.handleDownloadInfo(c.Writer, r)
+	})
+	s.engine.POST("/api/orders", func(c *gin.Context) { s.handleOrders(c.Writer, c.Request) })
+	s.engine.GET("/api/orders", func(c *gin.Context) { s.handleOrders(c.Writer, c.Request) })
+	s.engine.GET("/api/orders/:id", func(c *gin.Context) {
+		r := c.Request.Clone(c.Request.Context())
+		r.URL.Path = "/api/orders/" + c.Param("id")
+		s.handleGetOrder(c.Writer, r)
+	})
+	s.engine.POST("/api/pay/wechat", func(c *gin.Context) { s.handlePayWechat(c.Writer, c.Request) })
+	s.engine.POST("/api/pay/douyin", func(c *gin.Context) { s.handlePayDouyin(c.Writer, c.Request) })
+	s.engine.POST("/api/pay/callback", func(c *gin.Context) { s.handlePayCallback(c.Writer, c.Request) })
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {

@@ -36,6 +36,7 @@ func main() {
 		WechatAppID: envDefaults.WechatAppID,
 		WechatMchID: envDefaults.WechatMchID,
 		WechatNotifyURL: envDefaults.WechatNotifyURL,
+		PostgresDSN: envDefaults.PostgresDSN,
 	}
 
 	ensureDir(cfg.AssetsDir)

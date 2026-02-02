@@ -69,3 +69,27 @@ func (r *MemoryOrderRepo) List(page, pageSize int) ([]domain.Order, int) {
 	}
 	return all[start:end], total
 }
+
+type MemoryUserRepo struct {
+	mu sync.RWMutex
+	byOID map[string]*domain.User
+}
+
+func NewMemoryUserRepo() *MemoryUserRepo {
+	return &MemoryUserRepo{byOID: make(map[string]*domain.User)}
+}
+
+func (r *MemoryUserRepo) PutUser(u *domain.User) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *u
+	r.byOID[u.OpenID] = &cp
+	return nil
+}
+
+func (r *MemoryUserRepo) GetUserByOpenID(openid string) (*domain.User, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	u, ok := r.byOID[openid]
+	return u, ok
+}

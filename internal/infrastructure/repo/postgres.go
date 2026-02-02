@@ -38,6 +38,17 @@ func (r *PostgresRepo) init() error {
 	if err != nil {
 		return err
 	}
+	_, err = r.db.Exec(`CREATE TABLE IF NOT EXISTS users (
+		user_id TEXT PRIMARY KEY,
+		openid TEXT UNIQUE,
+		nickname TEXT,
+		avatar TEXT,
+		created_at TIMESTAMPTZ,
+		updated_at TIMESTAMPTZ
+	);`)
+	if err != nil {
+		return err
+	}
 	_, err = r.db.Exec(`CREATE TABLE IF NOT EXISTS orders (
 		order_id TEXT PRIMARY KEY,
 		task_id TEXT,
@@ -62,6 +73,22 @@ func (r *PostgresRepo) init() error {
 		bg_colors TEXT
 	);`)
 	return err
+}
+
+func (r *PostgresRepo) PutUser(u *domain.User) error {
+	_, err := r.db.Exec(`INSERT INTO users (user_id,openid,nickname,avatar,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (openid) DO UPDATE SET nickname=EXCLUDED.nickname, avatar=EXCLUDED.avatar, updated_at=EXCLUDED.updated_at`, u.UserID, u.OpenID, u.Nickname, u.Avatar, u.CreatedAt, u.UpdatedAt)
+	return err
+}
+
+func (r *PostgresRepo) GetUserByOpenID(openid string) (*domain.User, bool) {
+	var u domain.User
+	err := r.db.QueryRow(`SELECT user_id,openid,nickname,avatar,created_at,updated_at FROM users WHERE openid=$1`, openid).
+		Scan(&u.UserID, &u.OpenID, &u.Nickname, &u.Avatar, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		return nil, false
+	}
+	return &u, true
 }
 
 func (r *PostgresRepo) Put(t *domain.Task) error {

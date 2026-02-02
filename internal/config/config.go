@@ -15,6 +15,7 @@ type Config struct {
 	AlgoURL    string
 	PayMock    bool
 	WechatAppID string
+	WechatSecret string
 	WechatMchID string
 	WechatNotifyURL string
 	PostgresDSN string
@@ -31,6 +32,7 @@ func Default() Config {
 		AlgoURL:    "http://127.0.0.1:8080",
 		PayMock:    true,
 		WechatAppID: "",
+		WechatSecret: "",
 		WechatMchID: "",
 		WechatNotifyURL: "",
 		PostgresDSN: "",
@@ -80,6 +82,9 @@ func fromEnv(c Config) Config {
 	}
 	if v := os.Getenv("PERMIT_WECHAT_APPID"); v != "" {
 		c.WechatAppID = v
+	}
+	if v := os.Getenv("PERMIT_WECHAT_SECRET"); v != "" {
+		c.WechatSecret = v
 	}
 	if v := os.Getenv("PERMIT_WECHAT_MCHID"); v != "" {
 		c.WechatMchID = v

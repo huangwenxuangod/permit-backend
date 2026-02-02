@@ -18,6 +18,7 @@ import (
 	"permit-backend/internal/usecase"
 	"permit-backend/internal/infrastructure/asset"
 	"permit-backend/internal/infrastructure/repo"
+	"permit-backend/internal/infrastructure/wechat"
 )
 
 type Server struct {
@@ -25,6 +26,7 @@ type Server struct {
 	engine *gin.Engine
 	taskSvc  *usecase.TaskService
 	orderSvc *usecase.OrderService
+	authSvc  *usecase.AuthService
 	pg     *repo.PostgresRepo
 }
 
@@ -33,12 +35,14 @@ func New(cfg config.Config) *Server {
 
 	var taskRepo usecase.TaskRepo
 	var orderRepo usecase.OrderRepo
+	var userRepo usecase.UserRepo
 
 	if strings.TrimSpace(cfg.PostgresDSN) != "" {
 		pg, err := repo.NewPostgresRepo(cfg.PostgresDSN)
 		if err == nil {
 			taskRepo = pg
 			orderRepo = &pgOrderRepo{pg: pg}
+			userRepo = pg
 			s.pg = pg
 		}
 	}
@@ -47,6 +51,9 @@ func New(cfg config.Config) *Server {
 	}
 	if orderRepo == nil {
 		orderRepo = repo.NewMemoryOrderRepo()
+	}
+	if userRepo == nil {
+		userRepo = repo.NewMemoryUserRepo()
 	}
 
 	fs := asset.NewFSWriter(cfg.AssetsDir)
@@ -65,6 +72,8 @@ func New(cfg config.Config) *Server {
 		PayMock:     cfg.PayMock,
 		WechatAppID: cfg.WechatAppID,
 	}
+	wc := &wechat.Client{AppID: cfg.WechatAppID, Secret: cfg.WechatSecret}
+	s.authSvc = &usecase.AuthService{Repo: userRepo, Wechat: wc, JWTSecret: cfg.JWTSecret}
 	s.engine = gin.New()
 	s.engine.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
@@ -86,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) routesGin() {
 	s.engine.Static("/assets", s.cfg.AssetsDir)
+	s.engine.POST("/api/login", func(c *gin.Context) { s.handleLogin(c.Writer, c.Request) })
 	s.engine.GET("/api/specs", func(c *gin.Context) { s.handleSpecs(c.Writer, c.Request) })
 	s.engine.POST("/api/specs", func(c *gin.Context) { s.handleUpdateSpecs(c.Writer, c.Request) })
 	s.engine.POST("/api/upload", func(c *gin.Context) { s.handleUpload(c.Writer, c.Request) })
@@ -261,6 +271,32 @@ func (s *Server) handleUpdateSpecs(w http.ResponseWriter, r *http.Request) {
 	s.json(w, r, http.StatusOK, map[string]any{"updated": len(specs)})
 }
 
+type loginReq struct {
+	Code string `json:"code"`
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req loginReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "code required")
+		return
+	}
+	token, u, err := s.authSvc.Login(req.Code)
+	if err != nil {
+		s.err(w, r, http.StatusBadGateway, "WechatError", "login failed")
+		return
+	}
+	s.json(w, r, http.StatusOK, map[string]any{"token": token, "userId": u.UserID, "openid": u.OpenID})
+}
+
 func (s *Server) findSpec(code string) Spec {
 	code = strings.TrimSpace(strings.ToLower(code))
 	specs := s.defaultSpecs()
@@ -414,6 +450,14 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "sourceObjectKey required")
 		return
 	}
+	userID := "dev-user"
+	authz := r.Header.Get("Authorization")
+	if strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+		tk := strings.TrimSpace(authz[7:])
+		if uid, _, err := s.authSvc.Verify(tk); err == nil && strings.TrimSpace(uid) != "" {
+			userID = uid
+		}
+	}
 	spec := s.findSpec(orDefault(req.SpecCode, "passport"))
 	if req.WidthPx == 0 {
 		req.WidthPx = spec.WidthPx
@@ -431,7 +475,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 			req.AvailableColors = spec.BgColors
 		}
 	}
-	t, _ := s.taskSvc.CreateTask("dev-user", orDefault(req.SpecCode, "passport"), req.SourceObjectKey, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, colorHexOf)
+	t, _ := s.taskSvc.CreateTask(userID, orDefault(req.SpecCode, "passport"), req.SourceObjectKey, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, colorHexOf)
 	s.json(w, r, http.StatusOK, t)
 }
 

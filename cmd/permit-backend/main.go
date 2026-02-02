@@ -34,6 +34,7 @@ func main() {
 		AlgoURL:    envDefaults.AlgoURL,
 		PayMock:    envDefaults.PayMock,
 		WechatAppID: envDefaults.WechatAppID,
+		WechatSecret: envDefaults.WechatSecret,
 		WechatMchID: envDefaults.WechatMchID,
 		WechatNotifyURL: envDefaults.WechatNotifyURL,
 		PostgresDSN: envDefaults.PostgresDSN,

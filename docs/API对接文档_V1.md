@@ -52,7 +52,8 @@
   "widthPx":295,
   "heightPx":413,
   "dpi":300,
-  "defaultBackground":"white"
+  "defaultBackground":"white",
+  "availableColors":["white","blue","red"]
 }
 ```
 - 成功响应：

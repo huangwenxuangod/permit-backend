@@ -6,6 +6,7 @@ import (
 	"time"
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"permit-backend/internal/domain"
 	"permit-backend/internal/algo"
 )
@@ -24,6 +25,7 @@ type AlgoClient interface {
 	IDPhoto(baseURL, imagePath string, height, width, dpi int) (algo.IDPhotoResp, error)
 	AddBackgroundBase64(baseURL, rgbaBase64, colorHex string, dpi int) (algo.AddBackgroundResp, error)
 	AddBackgroundFile(baseURL string, rgbaPNG []byte, colorHex string, dpi int) (algo.AddBackgroundResp, error)
+	GenerateLayoutPhotosFile(baseURL string, rgbImage []byte, height, width, dpi, kb int) (algo.LayoutResp, error)
 }
 
 type TaskService struct {
@@ -166,6 +168,58 @@ func (s *TaskService) GenerateBackground(taskID string, colorName string, dpi in
 		return "", err
 	}
 	t.ProcessedUrls[colorName] = url
+	t.UpdatedAt = time.Now().UTC()
+	_ = s.Repo.Put(t)
+	return url, nil
+}
+
+func (s *TaskService) GenerateLayout(taskID string, colorName string, width, height, dpi, kb int, colorHexOf func(string) string) (string, error) {
+	t, ok := s.Repo.Get(taskID)
+	if !ok {
+		return "", ErrNotFound("task")
+	}
+	if t.LayoutUrls != nil {
+		if u, ok2 := t.LayoutUrls["6inch"]; ok2 && u != "" {
+			return u, nil
+		}
+	}
+	if _, ok2 := t.ProcessedUrls[colorName]; !ok2 {
+		bgURL, err := s.GenerateBackground(taskID, colorName, dpi, colorHexOf)
+		if err != nil || bgURL == "" {
+			return "", err
+		}
+	}
+	p := filepath.Join(s.AssetsDir, taskID, strings.ToLower(colorName)+".jpg")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return "", err
+	}
+	if width == 0 {
+		width = t.Spec.WidthPx
+	}
+	if height == 0 {
+		height = t.Spec.HeightPx
+	}
+	if dpi == 0 {
+		dpi = t.Spec.DPI
+	}
+	println("GenerateLayout size:", width, height, dpi, "kb", kb, "color", colorName)
+	resp, err := s.Algo.GenerateLayoutPhotosFile(s.AlgoURL, data, height, width, dpi, kb)
+	if err != nil || !resp.OK {
+		return "", err
+	}
+	jpg, err := algo.DecodeBase64(resp.ImageBase64)
+	if err != nil {
+		return "", err
+	}
+	url, err := s.Assets.WriteFile(taskID, "layout_6inch.jpg", jpg)
+	if err != nil {
+		return "", err
+	}
+	if t.LayoutUrls == nil {
+		t.LayoutUrls = map[string]string{}
+	}
+	t.LayoutUrls["6inch"] = url
 	t.UpdatedAt = time.Now().UTC()
 	_ = s.Repo.Put(t)
 	return url, nil

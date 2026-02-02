@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -21,6 +22,11 @@ type IDPhotoResp struct {
 
 type AddBackgroundResp struct {
 	OK         bool
+	ImageBase64 string
+}
+
+type LayoutResp struct {
+	OK          bool
 	ImageBase64 string
 }
 
@@ -123,6 +129,50 @@ func AddBackgroundBase64(baseURL, rgbaBase64, colorHex string, dpi int) (AddBack
 		return out, err
 	}
 	defer resp.Body.Close()
+	var m map[string]any
+	if err = json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return out, err
+	}
+	out.ImageBase64, _ = mString(m["image_base64"])
+	out.OK = parseStatus(m["status"])
+	return out, nil
+}
+
+func GenerateLayoutPhotosFile(baseURL string, rgbImage []byte, height, width, dpi, kb int) (LayoutResp, error) {
+	var out LayoutResp
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	_, _ = io.WriteString(body, "")
+	fmt.Printf("GenerateLayoutPhotos request: len=%d height=%d width=%d dpi=%d kb=%d\n", len(rgbImage), height, width, dpi, kb)
+	fw, err := w.CreateFormFile("input_image", "input.jpg")
+	if err != nil {
+		return out, err
+	}
+	if _, err = fw.Write(rgbImage); err != nil {
+		return out, err
+	}
+	_ = w.WriteField("height", itoa(height))
+	_ = w.WriteField("width", itoa(width))
+	if kb > 0 {
+		_ = w.WriteField("kb", itoa(kb))
+	}
+	_ = w.WriteField("dpi", itoa(dpi))
+	if err := w.Close(); err != nil {
+		return out, err
+	}
+	req, err := http.NewRequest("POST", baseURL+"/generate_layout_photos", body)
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, io.ErrUnexpectedEOF
+	}
 	var m map[string]any
 	if err = json.NewDecoder(resp.Body).Decode(&m); err != nil {
 		return out, err

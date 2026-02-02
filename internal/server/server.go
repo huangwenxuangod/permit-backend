@@ -100,6 +100,11 @@ func (s *Server) routesGin() {
 		r.URL.Path = "/api/tasks/" + c.Param("id") + "/background"
 		s.handleGenerateBackground(c.Writer, r)
 	})
+	s.engine.POST("/api/tasks/:id/layout", func(c *gin.Context) {
+		r := c.Request.Clone(c.Request.Context())
+		r.URL.Path = "/api/tasks/" + c.Param("id") + "/layout"
+		s.handleGenerateLayout(c.Writer, r)
+	})
 	s.engine.GET("/api/download/:id", func(c *gin.Context) {
 		r := c.Request.Clone(c.Request.Context())
 		r.URL.Path = "/api/download/" + c.Param("id")
@@ -174,6 +179,14 @@ type generateBackgroundReq struct {
 	DPI    int    `json:"dpi"`
 	Render int    `json:"render"`
 	KB     int    `json:"kb"`
+}
+
+type generateLayoutReq struct {
+	Color    string `json:"color"`
+	WidthPx  int    `json:"widthPx"`
+	HeightPx int    `json:"heightPx"`
+	DPI      int    `json:"dpi"`
+	KB       int    `json:"kb"`
 }
 
 type Spec struct {
@@ -469,6 +482,63 @@ func (s *Server) handleGenerateBackground(w http.ResponseWriter, r *http.Request
 	})
 }
 
+func (s *Server) handleGenerateLayout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[0] == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "task id required")
+		return
+	}
+	id := parts[0]
+	var req generateLayoutReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Color) == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "color required")
+		return
+	}
+	t, ok := s.taskSvc.Repo.Get(id)
+	if !ok {
+		s.err(w, r, http.StatusNotFound, "NotFound", "task not found")
+		return
+	}
+	width := req.WidthPx
+	height := req.HeightPx
+	dpi := req.DPI
+	if width == 0 || height == 0 || dpi == 0 {
+		sp := s.findSpec(orDefault(t.SpecCode, "passport"))
+		if width == 0 {
+			width = sp.WidthPx
+		}
+		if height == 0 {
+			height = sp.HeightPx
+		}
+		if dpi == 0 {
+			dpi = sp.DPI
+		}
+	}
+	url, err := s.taskSvc.GenerateLayout(id, req.Color, width, height, dpi, req.KB, colorHexOf)
+	if err != nil {
+		if _, ok := err.(usecase.ErrNotFound); ok {
+			s.err(w, r, http.StatusNotFound, "NotFound", err.Error())
+			return
+		}
+		s.err(w, r, http.StatusInternalServerError, "ServerError", "generate layout failed")
+		return
+	}
+	s.json(w, r, http.StatusOK, map[string]any{
+		"taskId": id,
+		"layout": "6inch",
+		"url":    url,
+		"status": "done",
+	})
+}
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
@@ -580,6 +650,9 @@ func (algoAdapter) AddBackgroundBase64(baseURL, rgbaBase64, colorHex string, dpi
 }
 func (algoAdapter) AddBackgroundFile(baseURL string, rgbaPNG []byte, colorHex string, dpi int) (algo.AddBackgroundResp, error) {
 	return algo.AddBackgroundFile(baseURL, rgbaPNG, colorHex, dpi)
+}
+func (algoAdapter) GenerateLayoutPhotosFile(baseURL string, rgbImage []byte, height, width, dpi, kb int) (algo.LayoutResp, error) {
+	return algo.GenerateLayoutPhotosFile(baseURL, rgbImage, height, width, dpi, kb)
 }
 
 type pgOrderRepo struct{ pg *repo.PostgresRepo }

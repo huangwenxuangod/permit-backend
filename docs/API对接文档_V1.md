@@ -42,70 +42,83 @@
 {"objectKey":"uploads/ef71cb305861f4cf_test0.jpg"}
 ```
 
-### 3. 创建并处理任务（V1 同步）
+### 3. 创建任务（生成透明基线 + 默认白底）
 - `POST /api/tasks`
 - 请求：
 ```json
 {
   "specCode":"passport",
   "sourceObjectKey":"uploads/ef71cb305861f4cf_test0.jpg",
-  "colors":["white","blue","red"],
   "widthPx":295,
   "heightPx":413,
-  "dpi":300
+  "dpi":300,
+  "defaultBackground":"white"
 }
 ```
 - 成功响应：
 ```json
 {
   "id":"8d1587000cab594ecd6b0ddc213866e0",
-  "userId":"dev-user",
-  "specCode":"passport",
-  "sourceObjectKey":"uploads/ef71cb305861f4cf_test0.jpg",
   "status":"done",
-  "processedUrls":{
-    "blue":"/assets/8d1587000cab594ecd6b0ddc213866e0/blue.jpg",
-    "white":"/assets/8d1587000cab594ecd6b0ddc213866e0/white.jpg"
-  },
+  "spec":{"code":"passport","widthPx":295,"heightPx":413,"dpi":300},
+  "sourceObjectKey":"uploads/ef71cb305861f4cf_test0.jpg",
+  "baselineUrl":"/assets/8d1587000cab594ecd6b0ddc213866e0/baseline.png",
+  "processedUrls":{"white":"/assets/8d1587000cab594ecd6b0ddc213866e0/white.jpg"},
+  "availableColors":["white","blue","red"],
   "createdAt":"2026-01-30T22:58:22.355Z",
   "updatedAt":"2026-01-30T22:58:22.853Z"
 }
 ```
-- 失败响应：
+
+### 4. 按需生成背景色
+- `POST /api/tasks/{id}/background`
+- 请求：
 ```json
-{
-  "id":"f19aaeaf4873229dcbad5d0ee202be05",
-  "status":"failed",
-  "errorMsg":"algo service error ...",
-  "processedUrls":{}
-}
+{"color":"blue","dpi":300,"render":0,"kb":200}
+```
+- 响应：
+```json
+{"taskId":"8d1587000cab594ecd6b0ddc213866e0","color":"blue","url":"/assets/8d1587000cab594ecd6b0ddc213866e0/blue.jpg","status":"done"}
 ```
 
-### 4. 查询任务
+### 5. 按需生成六寸排版照
+- `POST /api/tasks/{id}/layout`
+- 请求：
+```json
+{"color":"blue","widthPx":295,"heightPx":413,"dpi":300,"kb":200}
+```
+- 响应：
+```json
+{"taskId":"8d1587000cab594ecd6b0ddc213866e0","layout":"6inch","url":"/assets/8d1587000cab594ecd6b0ddc213866e0/layout_6inch.jpg","status":"done"}
+```
+
+### 6. 查询任务
 - `GET /api/tasks/{id}`
 - 响应：
 ```json
 {
   "id":"...",
-  "status":"processing",
-  "processedUrls":{},
+  "status":"done",
+  "baselineUrl":"/assets/.../baseline.png",
+  "processedUrls":{"white":"/assets/.../white.jpg"},
+  "availableColors":["white","blue","red"],
   "createdAt":"...",
   "updatedAt":"..."
 }
 ```
 
-### 5. 下载产物信息
+### 7. 下载产物信息
 - `GET /api/download/{taskId}`
 - 响应：
 ```json
 {"taskId":"...","urls":{"blue":"/assets/{taskId}/blue.jpg"},"expiresIn":600}
 ```
 
-### 6. 静态产物访问（开发模式）
+### 8. 静态产物访问（开发模式）
 - `/assets/{taskId}/{color}.jpg`
 - 说明：直接访问生成图片；生产建议改为带签名下载
 
-### 7. 订单创建（V1 简化）
+### 9. 订单创建（V1 简化）
 - `POST /api/orders`
 - 请求：
 ```json
@@ -123,7 +136,7 @@
 {"orderId":"...","status":"created"}
 ```
 
-### 8. 支付下单（V1 简化）
+### 10. 支付下单（V1 简化）
 - `POST /api/pay/wechat`
 - `POST /api/pay/douyin`
 - 请求：
@@ -135,7 +148,7 @@
 {"orderId":"...","payParams":{"type":"mock","nonceStr":"mock-nonce","timeStamp":"1738425600","signType":"MD5","paySign":"mock-sign"}}
 ```
 
-### 9. 支付回调（V1 简化）
+### 11. 支付回调（V1 简化）
 - `POST /api/pay/callback`
 - 行为：更新订单状态为 `paid` 或 `pending`；开发阶段可跳过验签（`signature_ok=true`）
 - 请求（示例）：
@@ -147,7 +160,7 @@
 {"ok":true}
 ```
 
-### 10. 下载授权（预留）
+### 12. 下载授权（预留）
 - `POST /api/download/token`
 - 请求：
 ```json
@@ -160,7 +173,7 @@
 - `GET /api/download/file?token=...`
 - 响应：临时下载 URL 或文件流
 
-### 11. 订单列表（V1）
+### 13. 订单列表（V1）
 - `GET /api/orders`
 - 响应：
 ```json
@@ -172,7 +185,7 @@
 }
 ```
 
-### 12. 订单详情（可选）
+### 14. 订单详情（可选）
 - `GET /api/orders/{id}`
 - 响应：
 ```json

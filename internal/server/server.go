@@ -85,6 +85,7 @@ func New(cfg config.Config) *Server {
 		}
 		c.Next()
 	})
+	s.engine.Use(s.authMiddleware())
 	s.routesGin()
 	return s
 }
@@ -669,6 +670,30 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request, status int, v any)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (s *Server) authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodOptions {
+			c.Next()
+			return
+		}
+		p := c.Request.URL.Path
+		if strings.HasPrefix(p, "/assets") || p == "/api/login" {
+			c.Next()
+			return
+		}
+		authz := c.GetHeader("Authorization")
+		if strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+			tk := strings.TrimSpace(authz[7:])
+			if uid, _, err := s.authSvc.Verify(tk); err == nil && strings.TrimSpace(uid) != "" {
+				c.Next()
+				return
+			}
+		}
+		s.err(c.Writer, c.Request, http.StatusUnauthorized, "Unauthorized", "token required")
+		c.Abort()
+	}
 }
 
 func colorHexOf(name string) string {

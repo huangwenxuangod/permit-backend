@@ -18,6 +18,15 @@ type TaskSpec struct {
 	DPI      int    `json:"dpi"`
 }
 
+type SpecDef struct {
+	Code     string   `json:"code"`
+	Name     string   `json:"name"`
+	WidthPx  int      `json:"widthPx"`
+	HeightPx int      `json:"heightPx"`
+	DPI      int      `json:"dpi"`
+	BgColors []string `json:"bgColors"`
+}
+
 type Task struct {
 	ID              string            `json:"id"`
 	UserID          string            `json:"userId,omitempty"`

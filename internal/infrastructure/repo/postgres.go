@@ -50,6 +50,17 @@ func (r *PostgresRepo) init() error {
 		created_at TIMESTAMPTZ,
 		updated_at TIMESTAMPTZ
 	);`)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`CREATE TABLE IF NOT EXISTS specs (
+		code TEXT PRIMARY KEY,
+		name TEXT,
+		width_px INT,
+		height_px INT,
+		dpi INT,
+		bg_colors TEXT
+	);`)
 	return err
 }
 
@@ -115,4 +126,45 @@ func (r *PostgresRepo) ListOrders(page, pageSize int) ([]domain.Order, int) {
 	var total int
 	_ = r.db.QueryRow(`SELECT COUNT(1) FROM orders`).Scan(&total)
 	return out, total
+}
+
+func (r *PostgresRepo) UpsertSpecs(specs []domain.SpecDef) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT INTO specs (code,name,width_px,height_px,dpi,bg_colors)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (code) DO UPDATE SET name=$2,width_px=$3,height_px=$4,dpi=$5,bg_colors=$6`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, s := range specs {
+		bg, _ := json.Marshal(s.BgColors)
+		if _, err := stmt.Exec(s.Code, s.Name, s.WidthPx, s.HeightPx, s.DPI, string(bg)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (r *PostgresRepo) ListSpecs() ([]domain.SpecDef, error) {
+	rows, err := r.db.Query(`SELECT code,name,width_px,height_px,dpi,bg_colors FROM specs ORDER BY name ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.SpecDef
+	for rows.Next() {
+		var s domain.SpecDef
+		var bg string
+		if err := rows.Scan(&s.Code, &s.Name, &s.WidthPx, &s.HeightPx, &s.DPI, &bg); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(bg), &s.BgColors)
+		out = append(out, s)
+	}
+	return out, nil
 }

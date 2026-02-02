@@ -25,6 +25,7 @@ type Server struct {
 	engine *gin.Engine
 	taskSvc  *usecase.TaskService
 	orderSvc *usecase.OrderService
+	pg     *repo.PostgresRepo
 }
 
 func New(cfg config.Config) *Server {
@@ -38,6 +39,7 @@ func New(cfg config.Config) *Server {
 		if err == nil {
 			taskRepo = pg
 			orderRepo = &pgOrderRepo{pg: pg}
+			s.pg = pg
 		}
 	}
 	if taskRepo == nil {
@@ -85,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routesGin() {
 	s.engine.Static("/assets", s.cfg.AssetsDir)
 	s.engine.GET("/api/specs", func(c *gin.Context) { s.handleSpecs(c.Writer, c.Request) })
+	s.engine.POST("/api/specs", func(c *gin.Context) { s.handleUpdateSpecs(c.Writer, c.Request) })
 	s.engine.POST("/api/upload", func(c *gin.Context) { s.handleUpload(c.Writer, c.Request) })
 	s.engine.POST("/api/tasks", func(c *gin.Context) { s.handleCreateTask(c.Writer, c.Request) })
 	s.engine.GET("/api/tasks/:id", func(c *gin.Context) {
@@ -196,15 +199,53 @@ func (s *Server) handleSpecs(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
 		return
 	}
+	if s.pg != nil {
+		if items, err := s.pg.ListSpecs(); err == nil && len(items) > 0 {
+			out := make([]Spec, 0, len(items))
+			for _, it := range items {
+				out = append(out, Spec{
+					Code: it.Code, Name: it.Name, WidthPx: it.WidthPx, HeightPx: it.HeightPx, DPI: it.DPI, BgColors: it.BgColors,
+				})
+			}
+			s.json(w, r, http.StatusOK, out)
+			return
+		}
+	}
 	s.json(w, r, http.StatusOK, s.defaultSpecs())
 }
 
 func (s *Server) defaultSpecs() []Spec {
 	return []Spec{
 		{Code: "passport", Name: "护照", WidthPx: 354, HeightPx: 472, DPI: 300, BgColors: []string{"white", "blue", "red"}},
-		{Code: "cn_1inch", Name: "一寸", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: []string{"white", "blue", "red"}},
-		{Code: "cn_2inch", Name: "二寸", WidthPx: 413, HeightPx: 626, DPI: 300, BgColors: []string{"white", "blue", "red"}},
+		{Code: "cn_1inch", Name: "一寸", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: []string{"white", "blue", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}},
+		{Code: "cn_2inch", Name: "二寸", WidthPx: 413, HeightPx: 579, DPI: 300, BgColors: []string{"white", "blue", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}},
+		{Code: "cn_2inch_small", Name: "小二寸", WidthPx: 413, HeightPx: 531, DPI: 300, BgColors: []string{"white", "blue", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}},
+		{Code: "cn_1inch_large", Name: "大一寸", WidthPx: 390, HeightPx: 567, DPI: 300, BgColors: []string{"white", "blue", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}},
 	}
+}
+
+func (s *Server) handleUpdateSpecs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	if s.pg == nil {
+		s.err(w, r, http.StatusNotImplemented, "NotImplemented", "PostgreSQL not configured")
+		return
+	}
+	siteBg := []string{"blue","white","red","tint","grey","gradient","dark_blue","sky_blue"}
+	specs := []domain.SpecDef{
+		{Code: "cn_1inch", Name: "一寸", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: siteBg},
+		{Code: "cn_2inch", Name: "二寸", WidthPx: 413, HeightPx: 579, DPI: 300, BgColors: siteBg},
+		{Code: "cn_2inch_small", Name: "小二寸", WidthPx: 413, HeightPx: 531, DPI: 300, BgColors: siteBg},
+		{Code: "cn_1inch_large", Name: "大一寸", WidthPx: 390, HeightPx: 567, DPI: 300, BgColors: siteBg},
+		{Code: "cn_social_security", Name: "社保证（300dpi，无回执）", WidthPx: 358, HeightPx: 441, DPI: 300, BgColors: []string{"white"}},
+	}
+	if err := s.pg.UpsertSpecs(specs); err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", "update specs failed")
+		return
+	}
+	s.json(w, r, http.StatusOK, map[string]any{"updated": len(specs)})
 }
 
 func (s *Server) findSpec(code string) Spec {

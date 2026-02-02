@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: permit
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d permit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  algo:
+    image: linzeyi/hivision_idphotos
+    command: ["python3", "deploy_api.py"]
+    ports:
+      - "8080:8080"
+  backend:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      PERMIT_ENV: dev
+      PERMIT_PORT: 5000
+      PERMIT_ASSETS_DIR: /data/assets
+      PERMIT_UPLOADS_DIR: /data/uploads
+      PERMIT_ALGO_URL: http://algo:8080
+      PERMIT_PAY_MOCK: "true"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/permit?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+      algo:
+        condition: service_started
+    volumes:
+      - backend_data:/data
+volumes:
+  postgres_data:
+  backend_data:

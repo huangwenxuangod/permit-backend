@@ -24,3 +24,15 @@ func (w *FSWriter) Write(taskID, color string, data []byte) (string, error) {
 	}
 	return "/assets/" + taskID + "/" + color + ".jpg", nil
 }
+
+func (w *FSWriter) WriteFile(taskID, filename string, data []byte) (string, error) {
+	dir := filepath.Join(w.AssetsDir, taskID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	out := filepath.Join(dir, filename)
+	if err := os.WriteFile(out, data, 0o644); err != nil {
+		return "", err
+	}
+	return "/assets/" + taskID + "/" + filename, nil
+}

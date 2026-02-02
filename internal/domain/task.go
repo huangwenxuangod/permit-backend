@@ -11,13 +11,24 @@ const (
 	StatusFailed     Status = "failed"
 )
 
+type TaskSpec struct {
+	Code     string `json:"code"`
+	WidthPx  int    `json:"widthPx"`
+	HeightPx int    `json:"heightPx"`
+	DPI      int    `json:"dpi"`
+}
+
 type Task struct {
 	ID              string            `json:"id"`
 	UserID          string            `json:"userId,omitempty"`
 	SpecCode        string            `json:"specCode"`
+	Spec            TaskSpec          `json:"spec"`
 	SourceObjectKey string            `json:"sourceObjectKey"`
 	Status          Status            `json:"status"`
+	BaselineUrl     string            `json:"baselineUrl,omitempty"`
+	AvailableColors []string          `json:"availableColors,omitempty"`
 	ProcessedUrls   map[string]string `json:"processedUrls"`
+	LayoutUrls      map[string]string `json:"layoutUrls,omitempty"`
 	ErrorMsg        string            `json:"errorMsg,omitempty"`
 	CreatedAt       time.Time         `json:"createdAt"`
 	UpdatedAt       time.Time         `json:"updatedAt"`

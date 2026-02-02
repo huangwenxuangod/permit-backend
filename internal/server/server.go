@@ -56,6 +56,7 @@ func New(cfg config.Config) *Server {
 		Algo:       al,
 		AlgoURL:    cfg.AlgoURL,
 		UploadsDir: cfg.UploadsDir,
+		AssetsDir:  cfg.AssetsDir,
 	}
 	s.orderSvc = &usecase.OrderService{
 		Repo:        orderRepo,
@@ -90,6 +91,11 @@ func (s *Server) routesGin() {
 		r := c.Request.Clone(c.Request.Context())
 		r.URL.Path = "/api/tasks/" + c.Param("id")
 		s.handleGetTask(c.Writer, r)
+	})
+	s.engine.POST("/api/tasks/:id/background", func(c *gin.Context) {
+		r := c.Request.Clone(c.Request.Context())
+		r.URL.Path = "/api/tasks/" + c.Param("id") + "/background"
+		s.handleGenerateBackground(c.Writer, r)
 	})
 	s.engine.GET("/api/download/:id", func(c *gin.Context) {
 		r := c.Request.Clone(c.Request.Context())
@@ -152,10 +158,19 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 type createTaskReq struct {
 	SpecCode        string   `json:"specCode"`
 	SourceObjectKey string   `json:"sourceObjectKey"`
-	Colors          []string `json:"colors"`
+	DefaultBackground string `json:"defaultBackground"`
+	AvailableColors   []string `json:"availableColors"`
+	Colors            []string `json:"colors"`
 	WidthPx         int      `json:"widthPx"`
 	HeightPx        int      `json:"heightPx"`
 	DPI             int      `json:"dpi"`
+}
+
+type generateBackgroundReq struct {
+	Color  string `json:"color"`
+	DPI    int    `json:"dpi"`
+	Render int    `json:"render"`
+	KB     int    `json:"kb"`
 }
 
 type Spec struct {
@@ -355,11 +370,62 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	if req.DPI == 0 {
 		req.DPI = spec.DPI
 	}
-	if len(req.Colors) == 0 {
-		req.Colors = spec.BgColors
+	if len(req.AvailableColors) == 0 {
+		if len(req.Colors) != 0 {
+			req.AvailableColors = req.Colors
+		} else {
+			req.AvailableColors = spec.BgColors
+		}
 	}
-	t, _ := s.taskSvc.CreateTask("dev-user", orDefault(req.SpecCode, "passport"), req.SourceObjectKey, req.Colors, req.WidthPx, req.HeightPx, req.DPI, colorHexOf)
+	t, _ := s.taskSvc.CreateTask("dev-user", orDefault(req.SpecCode, "passport"), req.SourceObjectKey, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, colorHexOf)
 	s.json(w, r, http.StatusOK, t)
+}
+
+func (s *Server) handleGenerateBackground(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[0] == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "task id required")
+		return
+	}
+	id := parts[0]
+	var req generateBackgroundReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Color) == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "color required")
+		return
+	}
+	t, ok := s.taskSvc.Repo.Get(id)
+	if !ok {
+		s.err(w, r, http.StatusNotFound, "NotFound", "task not found")
+		return
+	}
+	dpi := req.DPI
+	if dpi == 0 {
+		dpi = t.Spec.DPI
+	}
+	url, err := s.taskSvc.GenerateBackground(id, req.Color, dpi, colorHexOf)
+	if err != nil {
+		if _, ok := err.(usecase.ErrNotFound); ok {
+			s.err(w, r, http.StatusNotFound, "NotFound", err.Error())
+			return
+		}
+		s.err(w, r, http.StatusInternalServerError, "ServerError", "generate background failed")
+		return
+	}
+	s.json(w, r, http.StatusOK, map[string]any{
+		"taskId": id,
+		"color":  req.Color,
+		"url":    url,
+		"status": "done",
+	})
 }
 
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
@@ -470,6 +536,9 @@ func (algoAdapter) IDPhoto(baseURL, imagePath string, height, width, dpi int) (a
 }
 func (algoAdapter) AddBackgroundBase64(baseURL, rgbaBase64, colorHex string, dpi int) (algo.AddBackgroundResp, error) {
 	return algo.AddBackgroundBase64(baseURL, rgbaBase64, colorHex, dpi)
+}
+func (algoAdapter) AddBackgroundFile(baseURL string, rgbaPNG []byte, colorHex string, dpi int) (algo.AddBackgroundResp, error) {
+	return algo.AddBackgroundFile(baseURL, rgbaPNG, colorHex, dpi)
 }
 
 type pgOrderRepo struct{ pg *repo.PostgresRepo }

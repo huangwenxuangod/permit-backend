@@ -100,6 +100,7 @@ func (s *Server) routesGin() {
 	s.engine.GET("/api/specs", func(c *gin.Context) { s.handleSpecs(c.Writer, c.Request) })
 	s.engine.POST("/api/specs", func(c *gin.Context) { s.handleUpdateSpecs(c.Writer, c.Request) })
 	s.engine.POST("/api/upload", func(c *gin.Context) { s.handleUpload(c.Writer, c.Request) })
+	s.engine.GET("/api/me", func(c *gin.Context) { s.handleMe(c.Writer, c.Request) })
 	s.engine.POST("/api/tasks", func(c *gin.Context) { s.handleCreateTask(c.Writer, c.Request) })
 	s.engine.GET("/api/tasks/:id", func(c *gin.Context) {
 		r := c.Request.Clone(c.Request.Context())
@@ -296,6 +297,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, r, http.StatusOK, map[string]any{"token": token, "userId": u.UserID, "openid": u.OpenID})
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
+		return
+	}
+	authz := r.Header.Get("Authorization")
+	if !strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+		s.err(w, r, http.StatusUnauthorized, "Unauthorized", "token required")
+		return
+	}
+	tk := strings.TrimSpace(authz[7:])
+	uid, oid, err := s.authSvc.Verify(tk)
+	if err != nil || strings.TrimSpace(uid) == "" || strings.TrimSpace(oid) == "" {
+		s.err(w, r, http.StatusUnauthorized, "Unauthorized", "token invalid")
+		return
+	}
+	u, ok := s.authSvc.Repo.GetUserByOpenID(oid)
+	if !ok || u == nil {
+		s.json(w, r, http.StatusOK, map[string]any{
+			"userId":   uid,
+			"openid":   oid,
+			"nickname": "",
+			"avatar":   "",
+		})
+		return
+	}
+	s.json(w, r, http.StatusOK, u)
 }
 
 func (s *Server) findSpec(code string) Spec {

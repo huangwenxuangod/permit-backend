@@ -20,7 +20,7 @@ services:
     ports:
       - "8080:8080"
   backend:
-    image: ${PERMIT_BACKEND_IMAGE}
+    build: .
     ports:
       - "5000:5000"
     environment:

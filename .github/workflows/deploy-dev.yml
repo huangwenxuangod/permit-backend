@@ -26,7 +26,7 @@ jobs:
             echo "IMAGE_TAG=dev" >> $GITHUB_ENV
           fi
       - name: login-acr
-        run: echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ env.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" --password-stdin
+        run: echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ secrets.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" --password-stdin
       - name: push-image
         run: |
           docker tag permit-backend:ci "${{ env.IMAGE_FULL }}"
@@ -47,7 +47,7 @@ jobs:
           username: ${{ secrets.ECS_USER }}
           key: ${{ secrets.ECS_KEY }}
           script: |
-            docker login ${{ env.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" -p "${{ secrets.ACR_PASSWORD }}"
+            docker login ${{ secrets.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" -p "${{ secrets.ACR_PASSWORD }}"
             mkdir -p /srv/permit
             cat >/srv/permit/.env <<EOF
             PERMIT_WECHAT_APPID=${{ secrets.PERMIT_WECHAT_APPID }}

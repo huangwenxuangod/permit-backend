@@ -16,75 +16,27 @@ jobs:
       - run: go vet ./...
       - run: go test ./... -v
       - run: docker build -t permit-backend:ci .
-      - name: set-tag
+      - name: set-vars
         shell: bash
         run: |
-          BRANCH="${GITHUB_REF##*/}"
-          if [ "$BRANCH" = "main" ]; then
-            echo "IMAGE_TAG=prod" >> $GITHUB_ENV
-          else
-            echo "IMAGE_TAG=dev" >> $GITHUB_ENV
-          fi
-      - name: resolve-acr-image
-        shell: bash
-        run: |
-          set -euo pipefail
-          ACR_REG="${{ secrets.ACR_REGISTRY }}"
-          ACR_REPO="${{ secrets.ACR_REPO }}"
-          if [[ -z "$ACR_REG" || -z "$ACR_REPO" ]]; then
-            echo "You must set ACR_REGISTRY and ACR_REPO in Secrets" && exit 1
-          fi
-          if [[ "$ACR_REG" != *.cr.aliyuncs.com ]]; then
-            echo "ACR_REGISTRY must end with .cr.aliyuncs.com" && exit 1
-          fi
-          if [[ "$ACR_REPO" != */* ]]; then
-            echo "ACR_REPO must be <namespace>/<repo>, e.g. lovelykind/permit" && exit 1
-          fi
-          ACR_ALGO_IMAGE="${{ secrets.ACR_ALGO_IMAGE }}"
-          ACR_POSTGRES_IMAGE="${{ secrets.ACR_POSTGRES_IMAGE }}"
-          if [[ -z "$ACR_ALGO_IMAGE" || -z "$ACR_POSTGRES_IMAGE" ]]; then
-            echo "You must set ACR_ALGO_IMAGE and ACR_POSTGRES_IMAGE in Secrets" && exit 1
-          fi
-          SRC_ALGO="${{ secrets.SOURCE_ALGO_IMAGE }}"
-          SRC_PG="${{ secrets.SOURCE_POSTGRES_IMAGE }}"
-          if [[ -z "$SRC_ALGO" ]]; then SRC_ALGO="linzeyi/hivision_idphotos:latest"; fi
-          if [[ -z "$SRC_PG" ]]; then SRC_PG="postgres:16"; fi
-          SYNC_DEPS="${{ secrets.SYNC_DEPS }}"
-          if [[ -z "$SYNC_DEPS" ]]; then SYNC_DEPS="true"; fi
-          echo "ACR_REGISTRY=$ACR_REG" >> $GITHUB_ENV
-          echo "ACR_REPO=$ACR_REPO" >> $GITHUB_ENV
-          echo "IMAGE_FULL=$ACR_REG/$ACR_REPO:${{ env.IMAGE_TAG }}" >> $GITHUB_ENV
-          echo "ALGO_IMAGE=$ACR_ALGO_IMAGE" >> $GITHUB_ENV
-          echo "POSTGRES_IMAGE=$ACR_POSTGRES_IMAGE" >> $GITHUB_ENV
-          echo "SOURCE_ALGO_IMAGE=$SRC_ALGO" >> $GITHUB_ENV
-          echo "SOURCE_POSTGRES_IMAGE=$SRC_PG" >> $GITHUB_ENV
-          echo "SYNC_DEPS=$SYNC_DEPS" >> $GITHUB_ENV
-          echo "Resolved via ACR_REGISTRY/ACR_REPO: $ACR_REG/$ACR_REPO:${{ env.IMAGE_TAG }}"
+          if [ "${GITHUB_REF##*/}" = "main" ]; then TAG="prod"; else TAG="dev"; fi
+          echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
+          echo "IMAGE_FULL=${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_REPO }}:$TAG" >> $GITHUB_ENV
+          echo "ALGO_IMAGE=${{ secrets.ACR_ALGO_IMAGE }}" >> $GITHUB_ENV
+          echo "POSTGRES_IMAGE=${{ secrets.ACR_POSTGRES_IMAGE }}" >> $GITHUB_ENV
+          echo "SRC_ALGO=linzeyi/hivision_idphotos:latest" >> $GITHUB_ENV
+          echo "SRC_PG=postgres:16" >> $GITHUB_ENV
       - name: login-acr
-        run: echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ env.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" --password-stdin
+        run: echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ secrets.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" --password-stdin
       - name: sync-deps-images
-        if: ${{ env.SYNC_DEPS == 'true' }}
         shell: bash
         run: |
-          set -euo pipefail
-          sync_image() {
-            local src="$1"
-            local dst="$2"
-            if [[ "$dst" == *".cr.aliyuncs.com/"* ]]; then
-              if docker manifest inspect "$dst" >/dev/null 2>&1; then
-                echo "Skip sync, already exists: $dst"
-                return
-              fi
-              echo "Sync $src -> $dst"
-              docker pull "$src"
-              docker tag "$src" "$dst"
-              docker push "$dst"
-            else
-              echo "Skip sync for $dst"
-            fi
-          }
-          sync_image "${{ env.SOURCE_ALGO_IMAGE }}" "${{ env.ALGO_IMAGE }}"
-          sync_image "${{ env.SOURCE_POSTGRES_IMAGE }}" "${{ env.POSTGRES_IMAGE }}"
+          docker pull "${{ env.SRC_ALGO }}"
+          docker tag "${{ env.SRC_ALGO }}" "${{ env.ALGO_IMAGE }}"
+          docker push "${{ env.ALGO_IMAGE }}"
+          docker pull "${{ env.SRC_PG }}"
+          docker tag "${{ env.SRC_PG }}" "${{ env.POSTGRES_IMAGE }}"
+          docker push "${{ env.POSTGRES_IMAGE }}"
       - name: push-image
         run: |
           docker tag permit-backend:ci "${{ env.IMAGE_FULL }}"

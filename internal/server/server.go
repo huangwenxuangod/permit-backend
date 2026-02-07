@@ -293,7 +293,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token, u, err := s.authSvc.Login(req.Code)
 	if err != nil {
-		s.err(w, r, http.StatusBadGateway, "WechatError", "login failed")
+		s.err(w, r, http.StatusBadGateway, "WechatError", err.Error())
 		return
 	}
 	s.json(w, r, http.StatusOK, map[string]any{"token": token, "userId": u.UserID, "openid": u.OpenID})

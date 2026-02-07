@@ -1,0 +1,66 @@
+name: deploy
+on:
+  push:
+    branches:
+      - dev
+      - main
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go mod download
+      - run: go vet ./...
+      - run: go test ./... -v
+      - run: docker build -t permit-backend:ci .
+      - name: set-tag
+        shell: bash
+        run: |
+          BRANCH="${GITHUB_REF##*/}"
+          if [ "$BRANCH" = "main" ]; then
+            echo "IMAGE_TAG=prod" >> $GITHUB_ENV
+          else
+            echo "IMAGE_TAG=dev" >> $GITHUB_ENV
+          fi
+      - name: login-acr
+        run: echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ secrets.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" --password-stdin
+      - name: push-image
+        run: |
+          docker tag permit-backend:ci ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_REPO }}:${{ env.IMAGE_TAG }}
+          docker push ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_REPO }}:${{ env.IMAGE_TAG }}
+      - name: upload-compose
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.ECS_HOST }}
+          username: ${{ secrets.ECS_USER }}
+          key: ${{ secrets.ECS_KEY }}
+          source: "docker-compose.yml"
+          target: "/srv/permit/"
+          overwrite: true
+      - name: deploy-ecs
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.ECS_HOST }}
+          username: ${{ secrets.ECS_USER }}
+          key: ${{ secrets.ECS_KEY }}
+          script: |
+            docker login ${{ secrets.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" -p "${{ secrets.ACR_PASSWORD }}"
+            mkdir -p /srv/permit
+            cat >/srv/permit/.env <<EOF
+            PERMIT_WECHAT_APPID=${{ secrets.PERMIT_WECHAT_APPID }}
+            PERMIT_WECHAT_SECRET=${{ secrets.PERMIT_WECHAT_SECRET }}
+            EOF
+            cd /srv/permit
+            export PERMIT_BACKEND_IMAGE=${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_REPO }}:${{ env.IMAGE_TAG }}
+            if docker compose version >/dev/null 2>&1; then
+              docker compose pull
+              docker compose up -d
+              docker compose ps
+            else
+              docker-compose pull || true
+              docker-compose up -d || true
+              docker-compose ps || true
+            fi

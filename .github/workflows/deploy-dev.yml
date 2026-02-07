@@ -60,6 +60,7 @@ jobs:
             docker login ${{ env.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" -p "${{ secrets.ACR_PASSWORD }}"
             mkdir -p /srv/permit
             cat >/srv/permit/.env <<EOF
+            PERMIT_JWT_SECRET=${{ secrets.JWT_SECRET }}
             PERMIT_WECHAT_APPID=${{ secrets.PERMIT_WECHAT_APPID }}
             PERMIT_WECHAT_SECRET=${{ secrets.PERMIT_WECHAT_SECRET }}
             EOF

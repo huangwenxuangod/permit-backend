@@ -23,6 +23,8 @@ services:
     image: ${PERMIT_BACKEND_IMAGE}
     ports:
       - "5000:5000"
+    env_file:
+      - .env
     environment:
       PERMIT_ENV: dev
       PERMIT_PORT: 5000

@@ -50,9 +50,29 @@ jobs:
           echo "IMAGE_FULL=$ACR_REG/$ACR_REPO:${{ env.IMAGE_TAG }}" >> $GITHUB_ENV
           echo "ALGO_IMAGE=$ACR_ALGO_IMAGE" >> $GITHUB_ENV
           echo "POSTGRES_IMAGE=$ACR_POSTGRES_IMAGE" >> $GITHUB_ENV
+          echo "SOURCE_ALGO_IMAGE=linzeyi/hivision_idphotos:latest" >> $GITHUB_ENV
+          echo "SOURCE_POSTGRES_IMAGE=postgres:16" >> $GITHUB_ENV
           echo "Resolved via ACR_REGISTRY/ACR_REPO: $ACR_REG/$ACR_REPO:${{ env.IMAGE_TAG }}"
       - name: login-acr
         run: echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ env.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" --password-stdin
+      - name: sync-deps-images
+        shell: bash
+        run: |
+          set -euo pipefail
+          sync_image() {
+            local src="$1"
+            local dst="$2"
+            if [[ "$dst" == *".cr.aliyuncs.com/"* ]]; then
+              echo "Sync $src -> $dst"
+              docker pull "$src"
+              docker tag "$src" "$dst"
+              docker push "$dst"
+            else
+              echo "Skip sync for $dst"
+            fi
+          }
+          sync_image "${{ env.SOURCE_ALGO_IMAGE }}" "${{ env.ALGO_IMAGE }}"
+          sync_image "${{ env.SOURCE_POSTGRES_IMAGE }}" "${{ env.POSTGRES_IMAGE }}"
       - name: push-image
         run: |
           docker tag permit-backend:ci "${{ env.IMAGE_FULL }}"

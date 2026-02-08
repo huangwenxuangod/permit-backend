@@ -18,14 +18,16 @@ type OrderItem struct {
 }
 
 type Order struct {
-	OrderID     string      `json:"orderId"`
-	TaskID      string      `json:"taskId"`
-	Items       []OrderItem `json:"items"`
-	City        string      `json:"city"`
-	Remark      string      `json:"remark"`
-	AmountCents int         `json:"amountCents"`
-	Channel     string      `json:"channel"`
-	Status      OrderStatus `json:"status"`
-	CreatedAt   time.Time   `json:"createdAt"`
-	UpdatedAt   time.Time   `json:"updatedAt"`
+	OrderID           string      `json:"orderId"`
+	TaskID            string      `json:"taskId"`
+	Items             []OrderItem `json:"items"`
+	City              string      `json:"city"`
+	Remark            string      `json:"remark"`
+	AmountCents       int         `json:"amountCents"`
+	Channel           string      `json:"channel"`
+	Status            OrderStatus `json:"status"`
+	PayIdempotencyKey string      `json:"-"`
+	PayParams         string      `json:"-"`
+	CreatedAt         time.Time   `json:"createdAt"`
+	UpdatedAt         time.Time   `json:"updatedAt"`
 }

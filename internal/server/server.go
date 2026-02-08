@@ -1,33 +1,33 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
-	"crypto/rand"
-	"encoding/hex"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"permit-backend/internal/algo"
 	"permit-backend/internal/config"
 	"permit-backend/internal/domain"
-	"permit-backend/internal/usecase"
 	"permit-backend/internal/infrastructure/asset"
 	"permit-backend/internal/infrastructure/repo"
 	"permit-backend/internal/infrastructure/wechat"
+	"permit-backend/internal/usecase"
 )
 
 type Server struct {
-	cfg   config.Config
-	engine *gin.Engine
+	cfg      config.Config
+	engine   *gin.Engine
 	taskSvc  *usecase.TaskService
 	orderSvc *usecase.OrderService
 	authSvc  *usecase.AuthService
-	pg     *repo.PostgresRepo
+	pg       *repo.PostgresRepo
 }
 
 func New(cfg config.Config) *Server {
@@ -176,14 +176,14 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 type createTaskReq struct {
-	SpecCode        string   `json:"specCode"`
-	SourceObjectKey string   `json:"sourceObjectKey"`
-	DefaultBackground string `json:"defaultBackground"`
+	SpecCode          string   `json:"specCode"`
+	SourceObjectKey   string   `json:"sourceObjectKey"`
+	DefaultBackground string   `json:"defaultBackground"`
 	AvailableColors   []string `json:"availableColors"`
 	Colors            []string `json:"colors"`
-	WidthPx         int      `json:"widthPx"`
-	HeightPx        int      `json:"heightPx"`
-	DPI             int      `json:"dpi"`
+	WidthPx           int      `json:"widthPx"`
+	HeightPx          int      `json:"heightPx"`
+	DPI               int      `json:"dpi"`
 }
 
 type generateBackgroundReq struct {
@@ -211,12 +211,12 @@ type Spec struct {
 }
 
 type createOrderReq struct {
-	TaskID      string      `json:"taskId"`
+	TaskID      string             `json:"taskId"`
 	Items       []domain.OrderItem `json:"items"`
-	City        string      `json:"city"`
-	Remark      string      `json:"remark"`
-	AmountCents int         `json:"amountCents"`
-	Channel     string      `json:"channel"`
+	City        string             `json:"city"`
+	Remark      string             `json:"remark"`
+	AmountCents int                `json:"amountCents"`
+	Channel     string             `json:"channel"`
 }
 
 func (s *Server) handleSpecs(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +258,7 @@ func (s *Server) handleUpdateSpecs(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusNotImplemented, "NotImplemented", "PostgreSQL not configured")
 		return
 	}
-	siteBg := []string{"blue","white","red","tint","grey","gradient","dark_blue","sky_blue"}
+	siteBg := []string{"blue", "white", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}
 	specs := []domain.SpecDef{
 		{Code: "cn_1inch", Name: "一寸", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: siteBg},
 		{Code: "cn_2inch", Name: "二寸", WidthPx: 413, HeightPx: 579, DPI: 300, BgColors: siteBg},
@@ -354,6 +354,20 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 			s.err(w, r, http.StatusBadRequest, "BadRequest", "task not found")
 			return
 		}
+		if req.AmountCents <= 0 {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", "amountCents required")
+			return
+		}
+		if len(req.Items) == 0 {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", "items required")
+			return
+		}
+		for _, it := range req.Items {
+			if strings.TrimSpace(it.Type) == "" || it.Qty <= 0 {
+				s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid items")
+				return
+			}
+		}
 		o := &domain.Order{
 			TaskID:      req.TaskID,
 			Items:       req.Items,
@@ -422,6 +436,11 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request, channel strin
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
 		return
 	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "Idempotency-Key required")
+		return
+	}
 	var req payReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
@@ -435,9 +454,18 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request, channel strin
 		s.err(w, r, http.StatusNotImplemented, "NotImplemented", "real payment not configured")
 		return
 	}
-	p, err := s.orderSvc.Pay(req.OrderID, channel)
+	p, err := s.orderSvc.Pay(req.OrderID, channel, idempotencyKey)
 	if err != nil {
-		s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
+		switch err.(type) {
+		case usecase.ErrNotFound:
+			s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
+		case usecase.ErrConflict:
+			s.err(w, r, http.StatusConflict, "Conflict", err.Error())
+		case usecase.ErrBadRequest:
+			s.err(w, r, http.StatusBadRequest, "BadRequest", err.Error())
+		default:
+			s.err(w, r, http.StatusInternalServerError, "ServerError", "payment failed")
+		}
 		return
 	}
 	s.json(w, r, http.StatusOK, map[string]any{"orderId": req.OrderID, "payParams": p})
@@ -455,6 +483,11 @@ func (s *Server) handlePayCallback(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
 		return
 	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "Idempotency-Key required")
+		return
+	}
 	var req payCallbackReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
@@ -464,7 +497,17 @@ func (s *Server) handlePayCallback(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "orderId required")
 		return
 	}
-	_ = s.orderSvc.Callback(req.OrderID, strings.ToLower(req.Status))
+	if err := s.orderSvc.Callback(req.OrderID, strings.ToLower(req.Status)); err != nil {
+		switch err.(type) {
+		case usecase.ErrNotFound:
+			s.err(w, r, http.StatusNotFound, "NotFound", "order not found")
+		case usecase.ErrBadRequest:
+			s.err(w, r, http.StatusBadRequest, "BadRequest", err.Error())
+		default:
+			s.err(w, r, http.StatusInternalServerError, "ServerError", "callback failed")
+		}
+		return
+	}
 	s.json(w, r, http.StatusOK, map[string]any{"ok": true})
 }
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -756,6 +799,8 @@ func (algoAdapter) GenerateLayoutPhotosFile(baseURL string, rgbImage []byte, hei
 
 type pgOrderRepo struct{ pg *repo.PostgresRepo }
 
-func (p *pgOrderRepo) Put(o *domain.Order) error { return p.pg.PutOrder(o) }
+func (p *pgOrderRepo) Put(o *domain.Order) error           { return p.pg.PutOrder(o) }
 func (p *pgOrderRepo) Get(id string) (*domain.Order, bool) { return p.pg.GetOrder(id) }
-func (p *pgOrderRepo) List(page, pageSize int) ([]domain.Order, int) { return p.pg.ListOrders(page, pageSize) }
+func (p *pgOrderRepo) List(page, pageSize int) ([]domain.Order, int) {
+	return p.pg.ListOrders(page, pageSize)
+}

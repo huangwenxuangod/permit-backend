@@ -3,8 +3,8 @@ package repo
 import (
 	"database/sql"
 	"encoding/json"
-	"permit-backend/internal/domain"
 	_ "github.com/lib/pq"
+	"permit-backend/internal/domain"
 )
 
 type PostgresRepo struct {
@@ -58,9 +58,19 @@ func (r *PostgresRepo) init() error {
 		amount_cents INT,
 		channel TEXT,
 		status TEXT,
+		pay_idempotency_key TEXT,
+		pay_params TEXT,
 		created_at TIMESTAMPTZ,
 		updated_at TIMESTAMPTZ
 	);`)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS pay_idempotency_key TEXT;`)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS pay_params TEXT;`)
 	if err != nil {
 		return err
 	}
@@ -117,18 +127,18 @@ func (r *PostgresRepo) Get(id string) (*domain.Task, bool) {
 
 func (r *PostgresRepo) PutOrder(o *domain.Order) error {
 	items, _ := json.Marshal(o.Items)
-	_, err := r.db.Exec(`INSERT INTO orders (order_id,task_id,items,city,remark,amount_cents,channel,status,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (order_id) DO UPDATE SET task_id=$2,items=$3,city=$4,remark=$5,amount_cents=$6,channel=$7,status=$8,updated_at=$10`,
-		o.OrderID, o.TaskID, string(items), o.City, o.Remark, o.AmountCents, o.Channel, string(o.Status), o.CreatedAt, o.UpdatedAt)
+	_, err := r.db.Exec(`INSERT INTO orders (order_id,task_id,items,city,remark,amount_cents,channel,status,pay_idempotency_key,pay_params,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		ON CONFLICT (order_id) DO UPDATE SET task_id=$2,items=$3,city=$4,remark=$5,amount_cents=$6,channel=$7,status=$8,pay_idempotency_key=$9,pay_params=$10,updated_at=$12`,
+		o.OrderID, o.TaskID, string(items), o.City, o.Remark, o.AmountCents, o.Channel, string(o.Status), o.PayIdempotencyKey, o.PayParams, o.CreatedAt, o.UpdatedAt)
 	return err
 }
 
 func (r *PostgresRepo) GetOrder(id string) (*domain.Order, bool) {
 	var o domain.Order
 	var items string
-	err := r.db.QueryRow(`SELECT order_id,task_id,items,city,remark,amount_cents,channel,status,created_at,updated_at FROM orders WHERE order_id=$1`, id).
-		Scan(&o.OrderID, &o.TaskID, &items, &o.City, &o.Remark, &o.AmountCents, &o.Channel, (*string)(&o.Status), &o.CreatedAt, &o.UpdatedAt)
+	err := r.db.QueryRow(`SELECT order_id,task_id,items,city,remark,amount_cents,channel,status,pay_idempotency_key,pay_params,created_at,updated_at FROM orders WHERE order_id=$1`, id).
+		Scan(&o.OrderID, &o.TaskID, &items, &o.City, &o.Remark, &o.AmountCents, &o.Channel, (*string)(&o.Status), &o.PayIdempotencyKey, &o.PayParams, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return nil, false
 	}
@@ -137,7 +147,7 @@ func (r *PostgresRepo) GetOrder(id string) (*domain.Order, bool) {
 }
 
 func (r *PostgresRepo) ListOrders(page, pageSize int) ([]domain.Order, int) {
-	rows, err := r.db.Query(`SELECT order_id,task_id,items,city,remark,amount_cents,channel,status,created_at,updated_at FROM orders ORDER BY created_at DESC LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
+	rows, err := r.db.Query(`SELECT order_id,task_id,items,city,remark,amount_cents,channel,status,pay_idempotency_key,pay_params,created_at,updated_at FROM orders ORDER BY created_at DESC LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0
 	}
@@ -146,7 +156,7 @@ func (r *PostgresRepo) ListOrders(page, pageSize int) ([]domain.Order, int) {
 	for rows.Next() {
 		var o domain.Order
 		var items string
-		_ = rows.Scan(&o.OrderID, &o.TaskID, &items, &o.City, &o.Remark, &o.AmountCents, &o.Channel, (*string)(&o.Status), &o.CreatedAt, &o.UpdatedAt)
+		_ = rows.Scan(&o.OrderID, &o.TaskID, &items, &o.City, &o.Remark, &o.AmountCents, &o.Channel, (*string)(&o.Status), &o.PayIdempotencyKey, &o.PayParams, &o.CreatedAt, &o.UpdatedAt)
 		_ = json.Unmarshal([]byte(items), &o.Items)
 		out = append(out, o)
 	}

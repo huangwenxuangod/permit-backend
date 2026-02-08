@@ -63,6 +63,8 @@ jobs:
             PERMIT_JWT_SECRET=${{ secrets.JWT_SECRET }}
             PERMIT_WECHAT_APPID=${{ secrets.PERMIT_WECHAT_APPID }}
             PERMIT_WECHAT_SECRET=${{ secrets.PERMIT_WECHAT_SECRET }}
+            PERMIT_WECHAT_MCHID=${{ secrets.PERMIT_WECHAT_MCHID }}
+            PERMIT_WECHAT_NOTIFY_URL=${{ secrets.PERMIT_WECHAT_NOTIFY_URL }}
             EOF
             cd /srv/permit
             export PERMIT_BACKEND_IMAGE=${{ env.IMAGE_FULL }}

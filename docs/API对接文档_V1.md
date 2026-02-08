@@ -17,6 +17,14 @@
   ```json
   {"error":{"code":"BadRequest","message":"描述","requestId":"xxx"}}
   ```
+- 请求追踪：
+  - Header：`X-Request-Id`（前端可自带或由后端生成）
+  - 返回 Header：`X-Request-Id`（用于快速定位日志）
+  - 日志包含：时间、IP、方法、路径、状态码、耗时、requestId
+- 前端建议：
+  - 每次请求生成并传 `X-Request-Id`，出错时将其上报
+  - 上传失败时同时记录 URL、文件大小、网络环境
+  - 任务处理失败时用 `GET /api/tasks/{id}` 获取 `errorMsg`
 
 ## 枚举与状态
 - 任务状态：`queued | processing | done | failed`

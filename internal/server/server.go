@@ -57,7 +57,7 @@ func New(cfg config.Config) *Server {
 		userRepo = repo.NewMemoryUserRepo()
 	}
 
-	fs := asset.NewFSWriter(cfg.AssetsDir)
+	fs := asset.NewFSWriter(cfg.AssetsDir, cfg.AssetsPublicURL)
 	al := algoAdapter{}
 
 	s.taskSvc = &usecase.TaskService{

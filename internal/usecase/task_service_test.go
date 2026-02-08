@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"permit-backend/internal/algo"
 	"permit-backend/internal/domain"
 	"permit-backend/internal/infrastructure/asset"
-	"permit-backend/internal/algo"
 )
 
 type fakeRepo struct {
@@ -127,7 +127,7 @@ func TestTaskService_EndToEnd(t *testing.T) {
 	}
 
 	repo := &fakeRepo{}
-	fs := asset.NewFSWriter(assetsDir)
+	fs := asset.NewFSWriter(assetsDir, "")
 	al := testAlgo{}
 	svc := &TaskService{
 		Repo:       repo,
@@ -189,4 +189,3 @@ func TestTaskService_EndToEnd(t *testing.T) {
 		t.Fatalf("updatedAt not recent: %v", tk.UpdatedAt)
 	}
 }
-

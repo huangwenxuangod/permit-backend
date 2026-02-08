@@ -6,36 +6,38 @@ import (
 )
 
 type Config struct {
-	Env        string
-	Port       int
-	AssetsDir  string
-	UploadsDir string
-	JWTSecret  string
-	LogJSON    bool
-	AlgoURL    string
-	PayMock    bool
-	WechatAppID string
-	WechatSecret string
-	WechatMchID string
+	Env             string
+	Port            int
+	AssetsDir       string
+	AssetsPublicURL string
+	UploadsDir      string
+	JWTSecret       string
+	LogJSON         bool
+	AlgoURL         string
+	PayMock         bool
+	WechatAppID     string
+	WechatSecret    string
+	WechatMchID     string
 	WechatNotifyURL string
-	PostgresDSN string
+	PostgresDSN     string
 }
 
 func Default() Config {
 	return Config{
-		Env:        "dev",
-		Port:       5000,
-		AssetsDir:  "./assets",
-		UploadsDir: "./uploads",
-		JWTSecret:  "",
-		LogJSON:    true,
-		AlgoURL:    "http://127.0.0.1:8080",
-		PayMock:    true,
-		WechatAppID: "",
-		WechatSecret: "",
-		WechatMchID: "",
+		Env:             "dev",
+		Port:            5000,
+		AssetsDir:       "./assets",
+		AssetsPublicURL: "",
+		UploadsDir:      "./uploads",
+		JWTSecret:       "",
+		LogJSON:         true,
+		AlgoURL:         "http://127.0.0.1:8080",
+		PayMock:         true,
+		WechatAppID:     "",
+		WechatSecret:    "",
+		WechatMchID:     "",
 		WechatNotifyURL: "",
-		PostgresDSN: "",
+		PostgresDSN:     "",
 	}
 }
 
@@ -54,6 +56,9 @@ func fromEnv(c Config) Config {
 	}
 	if v := os.Getenv("PERMIT_ASSETS_DIR"); v != "" {
 		c.AssetsDir = v
+	}
+	if v := os.Getenv("PERMIT_ASSETS_PUBLIC_URL"); v != "" {
+		c.AssetsPublicURL = v
 	}
 	if v := os.Getenv("PERMIT_UPLOADS_DIR"); v != "" {
 		c.UploadsDir = v

@@ -3,14 +3,16 @@ package asset
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type FSWriter struct {
-	AssetsDir string
+	AssetsDir     string
+	PublicBaseURL string
 }
 
-func NewFSWriter(assetsDir string) *FSWriter {
-	return &FSWriter{AssetsDir: assetsDir}
+func NewFSWriter(assetsDir string, publicBaseURL string) *FSWriter {
+	return &FSWriter{AssetsDir: assetsDir, PublicBaseURL: strings.TrimRight(publicBaseURL, "/")}
 }
 
 func (w *FSWriter) Write(taskID, color string, data []byte) (string, error) {
@@ -22,7 +24,7 @@ func (w *FSWriter) Write(taskID, color string, data []byte) (string, error) {
 	if err := os.WriteFile(out, data, 0o644); err != nil {
 		return "", err
 	}
-	return "/assets/" + taskID + "/" + color + ".jpg", nil
+	return w.buildURL("/assets/" + taskID + "/" + color + ".jpg"), nil
 }
 
 func (w *FSWriter) WriteFile(taskID, filename string, data []byte) (string, error) {
@@ -34,5 +36,12 @@ func (w *FSWriter) WriteFile(taskID, filename string, data []byte) (string, erro
 	if err := os.WriteFile(out, data, 0o644); err != nil {
 		return "", err
 	}
-	return "/assets/" + taskID + "/" + filename, nil
+	return w.buildURL("/assets/" + taskID + "/" + filename), nil
+}
+
+func (w *FSWriter) buildURL(path string) string {
+	if w.PublicBaseURL == "" {
+		return path
+	}
+	return w.PublicBaseURL + path
 }

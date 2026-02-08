@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -75,6 +76,8 @@ func New(cfg config.Config) *Server {
 	wc := &wechat.Client{AppID: cfg.WechatAppID, Secret: cfg.WechatSecret}
 	s.authSvc = &usecase.AuthService{Repo: userRepo, Wechat: wc, JWTSecret: cfg.JWTSecret}
 	s.engine = gin.New()
+	s.engine.Use(gin.Logger())
+	s.engine.Use(gin.Recovery())
 	s.engine.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "*")
@@ -728,6 +731,7 @@ func (s *Server) err(w http.ResponseWriter, r *http.Request, status int, code, m
 	if v := r.Header.Get("Idempotency-Key"); v != "" {
 		reqID = v
 	}
+	log.Printf("error %s %s %d %s", r.Method, r.URL.Path, status, msg)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{

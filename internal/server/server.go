@@ -76,7 +76,19 @@ func New(cfg config.Config) *Server {
 	wc := &wechat.Client{AppID: cfg.WechatAppID, Secret: cfg.WechatSecret}
 	s.authSvc = &usecase.AuthService{Repo: userRepo, Wechat: wc, JWTSecret: cfg.JWTSecret}
 	s.engine = gin.New()
-	s.engine.Use(gin.Logger())
+	s.engine.Use(func(c *gin.Context) {
+		reqID := strings.TrimSpace(c.GetHeader("X-Request-Id"))
+		if reqID == "" {
+			reqID = randomID()
+		}
+		c.Request.Header.Set("X-Request-Id", reqID)
+		c.Writer.Header().Set("X-Request-Id", reqID)
+		c.Next()
+	})
+	s.engine.Use(gin.LoggerWithFormatter(func(p gin.LogFormatterParams) string {
+		reqID := p.Request.Header.Get("X-Request-Id")
+		return p.TimeStamp.Format("2006-01-02T15:04:05Z07:00") + " " + p.ClientIP + " " + p.Method + " " + p.Path + " " + strconv.Itoa(p.StatusCode) + " " + p.Latency.String() + " " + reqID + "\n"
+	}))
 	s.engine.Use(gin.Recovery())
 	s.engine.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
@@ -727,11 +739,14 @@ func orDefault(s, d string) string {
 }
 
 func (s *Server) err(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
-	reqID := ""
-	if v := r.Header.Get("Idempotency-Key"); v != "" {
-		reqID = v
+	reqID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+	if reqID == "" {
+		reqID = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	}
-	log.Printf("error %s %s %d %s", r.Method, r.URL.Path, status, msg)
+	if reqID != "" {
+		w.Header().Set("X-Request-Id", reqID)
+	}
+	log.Printf("error %s %s %d %s %s", r.Method, r.URL.Path, status, reqID, msg)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{

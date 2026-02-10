@@ -16,6 +16,12 @@ type TaskRepo interface {
 	Get(id string) (*domain.Task, bool)
 }
 
+type DownloadTokenRepo interface {
+	PutToken(*domain.DownloadToken) error
+	GetToken(token string) (*domain.DownloadToken, bool)
+	UpdateToken(*domain.DownloadToken) error
+}
+
 type AssetWriter interface {
 	Write(taskID, color string, data []byte) (string, error)
 	WriteFile(taskID, filename string, data []byte) (string, error)
@@ -35,6 +41,11 @@ type TaskService struct {
 	AlgoURL    string
 	UploadsDir string
 	AssetsDir  string
+}
+
+type DownloadService struct {
+	Repo  DownloadTokenRepo
+	Tasks TaskRepo
 }
 
 func (s *TaskService) CreateTask(userID, specCode, sourceObjectKey string, defaultBackground string, width, height, dpi int, availableColors []string, colorHexOf func(string) string) (*domain.Task, error) {
@@ -230,6 +241,64 @@ func (s *TaskService) objectKeyToPath(objectKey string) string {
 		return filepath.Join(s.UploadsDir, objectKey[8:])
 	}
 	return filepath.Join(s.UploadsDir, objectKey)
+}
+
+func (s *DownloadService) CreateToken(taskID, userID string, ttlSeconds int) (*domain.DownloadToken, error) {
+	if strings.TrimSpace(taskID) == "" {
+		return nil, ErrBadRequest("taskId required")
+	}
+	if strings.TrimSpace(userID) == "" {
+		return nil, ErrBadRequest("userId required")
+	}
+	t, ok := s.Tasks.Get(taskID)
+	if !ok {
+		return nil, ErrNotFound("task")
+	}
+	if t.Status != domain.StatusDone {
+		return nil, ErrBadRequest("task not ready")
+	}
+	if strings.TrimSpace(t.UserID) != "" && strings.TrimSpace(t.UserID) != strings.TrimSpace(userID) {
+		return nil, ErrBadRequest("task not owned")
+	}
+	if ttlSeconds <= 0 {
+		ttlSeconds = 600
+	}
+	now := time.Now().UTC()
+	dt := &domain.DownloadToken{
+		Token:     randomID(),
+		TaskID:    taskID,
+		UserID:    userID,
+		Status:    domain.DownloadTokenActive,
+		ExpiresAt: now.Add(time.Duration(ttlSeconds) * time.Second),
+		CreatedAt: now,
+	}
+	_ = s.Repo.PutToken(dt)
+	return dt, nil
+}
+
+func (s *DownloadService) UseToken(token string) (*domain.DownloadToken, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, ErrBadRequest("token required")
+	}
+	dt, ok := s.Repo.GetToken(token)
+	if !ok {
+		return nil, ErrNotFound("token")
+	}
+	now := time.Now().UTC()
+	if dt.Status != domain.DownloadTokenActive {
+		return nil, ErrConflict("token not active")
+	}
+	if now.After(dt.ExpiresAt) {
+		dt.Status = domain.DownloadTokenExpired
+		dt.UsedAt = now
+		_ = s.Repo.UpdateToken(dt)
+		return nil, ErrBadRequest("token expired")
+	}
+	dt.Status = domain.DownloadTokenUsed
+	dt.UsedAt = now
+	_ = s.Repo.UpdateToken(dt)
+	return dt, nil
 }
 
 func randomID() string {

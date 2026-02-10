@@ -42,3 +42,22 @@ type Task struct {
 	CreatedAt       time.Time         `json:"createdAt"`
 	UpdatedAt       time.Time         `json:"updatedAt"`
 }
+
+type DownloadTokenStatus string
+
+const (
+	DownloadTokenActive  DownloadTokenStatus = "active"
+	DownloadTokenUsed    DownloadTokenStatus = "used"
+	DownloadTokenExpired DownloadTokenStatus = "expired"
+	DownloadTokenRevoked DownloadTokenStatus = "revoked"
+)
+
+type DownloadToken struct {
+	Token     string              `json:"token"`
+	TaskID    string              `json:"taskId"`
+	UserID    string              `json:"userId"`
+	Status    DownloadTokenStatus `json:"status"`
+	ExpiresAt time.Time           `json:"expiresAt"`
+	CreatedAt time.Time           `json:"createdAt"`
+	UsedAt    time.Time           `json:"usedAt,omitempty"`
+}

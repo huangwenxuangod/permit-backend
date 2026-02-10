@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -28,6 +29,7 @@ type Server struct {
 	taskSvc  *usecase.TaskService
 	orderSvc *usecase.OrderService
 	authSvc  *usecase.AuthService
+	downloadSvc *usecase.DownloadService
 	pg       *repo.PostgresRepo
 }
 
@@ -37,6 +39,7 @@ func New(cfg config.Config) *Server {
 	var taskRepo usecase.TaskRepo
 	var orderRepo usecase.OrderRepo
 	var userRepo usecase.UserRepo
+	var downloadRepo usecase.DownloadTokenRepo
 
 	if strings.TrimSpace(cfg.PostgresDSN) != "" {
 		pg, err := repo.NewPostgresRepo(cfg.PostgresDSN)
@@ -44,6 +47,7 @@ func New(cfg config.Config) *Server {
 			taskRepo = pg
 			orderRepo = &pgOrderRepo{pg: pg}
 			userRepo = pg
+			downloadRepo = pg
 			s.pg = pg
 		}
 	}
@@ -55,6 +59,9 @@ func New(cfg config.Config) *Server {
 	}
 	if userRepo == nil {
 		userRepo = repo.NewMemoryUserRepo()
+	}
+	if downloadRepo == nil {
+		downloadRepo = repo.NewMemoryDownloadTokenRepo()
 	}
 
 	fs := asset.NewFSWriter(cfg.AssetsDir, cfg.AssetsPublicURL)
@@ -72,6 +79,10 @@ func New(cfg config.Config) *Server {
 		Repo:        orderRepo,
 		PayMock:     cfg.PayMock,
 		WechatAppID: cfg.WechatAppID,
+	}
+	s.downloadSvc = &usecase.DownloadService{
+		Repo:  downloadRepo,
+		Tasks: taskRepo,
 	}
 	wc := &wechat.Client{AppID: cfg.WechatAppID, Secret: cfg.WechatSecret}
 	s.authSvc = &usecase.AuthService{Repo: userRepo, Wechat: wc, JWTSecret: cfg.JWTSecret}
@@ -132,6 +143,8 @@ func (s *Server) routesGin() {
 		r.URL.Path = "/api/tasks/" + c.Param("id") + "/layout"
 		s.handleGenerateLayout(c.Writer, r)
 	})
+	s.engine.POST("/api/download/token", func(c *gin.Context) { s.handleDownloadToken(c.Writer, c.Request) })
+	s.engine.GET("/api/download/file", func(c *gin.Context) { s.handleDownloadFile(c.Writer, c.Request) })
 	s.engine.GET("/api/download/:id", func(c *gin.Context) {
 		r := c.Request.Clone(c.Request.Context())
 		r.URL.Path = "/api/download/" + c.Param("id")
@@ -712,9 +725,153 @@ func (s *Server) handleDownloadInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type downloadTokenReq struct {
+	TaskID     string `json:"taskId"`
+	TTLSeconds int    `json:"ttlSeconds"`
+}
+
+func (s *Server) handleDownloadToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	authz := r.Header.Get("Authorization")
+	if !strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+		s.err(w, r, http.StatusUnauthorized, "Unauthorized", "token required")
+		return
+	}
+	tk := strings.TrimSpace(authz[7:])
+	uid, _, err := s.authSvc.Verify(tk)
+	if err != nil || strings.TrimSpace(uid) == "" {
+		s.err(w, r, http.StatusUnauthorized, "Unauthorized", "token invalid")
+		return
+	}
+	var req downloadTokenReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	dt, err := s.downloadSvc.CreateToken(req.TaskID, uid, req.TTLSeconds)
+	if err != nil {
+		if _, ok := err.(usecase.ErrNotFound); ok {
+			s.err(w, r, http.StatusNotFound, "NotFound", err.Error())
+			return
+		}
+		if _, ok := err.(usecase.ErrConflict); ok {
+			s.err(w, r, http.StatusConflict, "Conflict", err.Error())
+			return
+		}
+		if _, ok := err.(usecase.ErrBadRequest); ok {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		s.err(w, r, http.StatusInternalServerError, "ServerError", "create token failed")
+		return
+	}
+	s.json(w, r, http.StatusOK, map[string]any{
+		"token":     dt.Token,
+		"expiresAt": dt.ExpiresAt,
+	})
+}
+
+func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	dt, err := s.downloadSvc.UseToken(token)
+	if err != nil {
+		if _, ok := err.(usecase.ErrNotFound); ok {
+			s.err(w, r, http.StatusNotFound, "NotFound", err.Error())
+			return
+		}
+		if _, ok := err.(usecase.ErrConflict); ok {
+			s.err(w, r, http.StatusConflict, "Conflict", err.Error())
+			return
+		}
+		if _, ok := err.(usecase.ErrBadRequest); ok {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		s.err(w, r, http.StatusInternalServerError, "ServerError", "download failed")
+		return
+	}
+	t, ok := s.taskSvc.Repo.Get(dt.TaskID)
+	if !ok {
+		s.err(w, r, http.StatusNotFound, "NotFound", "task not found")
+		return
+	}
+	if t.Status != domain.StatusDone {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "task not ready")
+		return
+	}
+	type entry struct {
+		name string
+		path string
+	}
+	entries := make([]entry, 0, 8)
+	if name, path, ok := s.assetEntry(t.BaselineUrl); ok {
+		entries = append(entries, entry{name: name, path: path})
+	}
+	for _, url := range t.ProcessedUrls {
+		if name, path, ok := s.assetEntry(url); ok {
+			entries = append(entries, entry{name: name, path: path})
+		}
+	}
+	for _, url := range t.LayoutUrls {
+		if name, path, ok := s.assetEntry(url); ok {
+			entries = append(entries, entry{name: name, path: path})
+		}
+	}
+	if len(entries) == 0 {
+		s.err(w, r, http.StatusNotFound, "NotFound", "assets not found")
+		return
+	}
+	for _, e := range entries {
+		if _, err := os.Stat(e.path); err != nil {
+			s.err(w, r, http.StatusNotFound, "NotFound", "asset not found")
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"task_"+t.ID+".zip\"")
+	zw := zip.NewWriter(w)
+	for _, e := range entries {
+		f, err := os.Open(e.path)
+		if err != nil {
+			break
+		}
+		wr, err := zw.Create(e.name)
+		if err == nil {
+			_, _ = io.Copy(wr, f)
+		}
+		_ = f.Close()
+	}
+	_ = zw.Close()
+}
+
 func validImageName(name string) bool {
 	n := strings.ToLower(name)
 	return strings.HasSuffix(n, ".jpg") || strings.HasSuffix(n, ".jpeg") || strings.HasSuffix(n, ".png")
+}
+
+func (s *Server) assetEntry(url string) (string, string, bool) {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return "", "", false
+	}
+	idx := strings.Index(url, "/assets/")
+	if idx < 0 {
+		return "", "", false
+	}
+	rel := strings.TrimPrefix(url[idx:], "/assets/")
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return "", "", false
+	}
+	path := filepath.Join(s.cfg.AssetsDir, filepath.FromSlash(rel))
+	return rel, path, true
 }
 
 func randomID() string {
@@ -771,7 +928,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			return
 		}
 		p := c.Request.URL.Path
-		if strings.HasPrefix(p, "/assets") || p == "/api/login" {
+		if strings.HasPrefix(p, "/assets") || p == "/api/login" || strings.HasPrefix(p, "/api/download/file") {
 			c.Next()
 			return
 		}

@@ -93,3 +93,39 @@ func (r *MemoryUserRepo) GetUserByOpenID(openid string) (*domain.User, bool) {
 	u, ok := r.byOID[openid]
 	return u, ok
 }
+
+type MemoryDownloadTokenRepo struct {
+	mu sync.RWMutex
+	m  map[string]*domain.DownloadToken
+}
+
+func NewMemoryDownloadTokenRepo() *MemoryDownloadTokenRepo {
+	return &MemoryDownloadTokenRepo{m: make(map[string]*domain.DownloadToken)}
+}
+
+func (r *MemoryDownloadTokenRepo) PutToken(tk *domain.DownloadToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *tk
+	r.m[tk.Token] = &cp
+	return nil
+}
+
+func (r *MemoryDownloadTokenRepo) GetToken(token string) (*domain.DownloadToken, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tk, ok := r.m[token]
+	if !ok {
+		return nil, false
+	}
+	cp := *tk
+	return &cp, true
+}
+
+func (r *MemoryDownloadTokenRepo) UpdateToken(tk *domain.DownloadToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *tk
+	r.m[tk.Token] = &cp
+	return nil
+}

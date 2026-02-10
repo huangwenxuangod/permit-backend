@@ -82,6 +82,18 @@ func (r *PostgresRepo) init() error {
 		dpi INT,
 		bg_colors TEXT
 	);`)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`CREATE TABLE IF NOT EXISTS download_tokens (
+		token TEXT PRIMARY KEY,
+		task_id TEXT,
+		user_id TEXT,
+		status TEXT,
+		expires_at TIMESTAMPTZ,
+		created_at TIMESTAMPTZ,
+		used_at TIMESTAMPTZ
+	);`)
 	return err
 }
 
@@ -204,4 +216,42 @@ func (r *PostgresRepo) ListSpecs() ([]domain.SpecDef, error) {
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+func (r *PostgresRepo) PutToken(tk *domain.DownloadToken) error {
+	var usedAt sql.NullTime
+	if !tk.UsedAt.IsZero() {
+		usedAt = sql.NullTime{Time: tk.UsedAt, Valid: true}
+	}
+	_, err := r.db.Exec(`INSERT INTO download_tokens (token,task_id,user_id,status,expires_at,created_at,used_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (token) DO UPDATE SET task_id=$2,user_id=$3,status=$4,expires_at=$5,created_at=$6,used_at=$7`,
+		tk.Token, tk.TaskID, tk.UserID, string(tk.Status), tk.ExpiresAt, tk.CreatedAt, usedAt)
+	return err
+}
+
+func (r *PostgresRepo) GetToken(token string) (*domain.DownloadToken, bool) {
+	var tk domain.DownloadToken
+	var status string
+	var usedAt sql.NullTime
+	err := r.db.QueryRow(`SELECT token,task_id,user_id,status,expires_at,created_at,used_at FROM download_tokens WHERE token=$1`, token).
+		Scan(&tk.Token, &tk.TaskID, &tk.UserID, &status, &tk.ExpiresAt, &tk.CreatedAt, &usedAt)
+	if err != nil {
+		return nil, false
+	}
+	tk.Status = domain.DownloadTokenStatus(status)
+	if usedAt.Valid {
+		tk.UsedAt = usedAt.Time
+	}
+	return &tk, true
+}
+
+func (r *PostgresRepo) UpdateToken(tk *domain.DownloadToken) error {
+	var usedAt sql.NullTime
+	if !tk.UsedAt.IsZero() {
+		usedAt = sql.NullTime{Time: tk.UsedAt, Valid: true}
+	}
+	_, err := r.db.Exec(`UPDATE download_tokens SET status=$2,expires_at=$3,created_at=$4,used_at=$5 WHERE token=$1`,
+		tk.Token, string(tk.Status), tk.ExpiresAt, tk.CreatedAt, usedAt)
+	return err
 }

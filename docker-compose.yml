@@ -41,6 +41,17 @@ services:
         condition: service_started
     volumes:
       - backend_data:/data
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - backend_data:/data:ro
 volumes:
   postgres_data:
   backend_data:

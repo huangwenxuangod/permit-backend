@@ -50,6 +50,15 @@ jobs:
           source: "docker-compose.yml"
           target: "/srv/permit/"
           overwrite: true
+      - name: upload-nginx-conf
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.ECS_HOST }}
+          username: ${{ secrets.ECS_USER }}
+          key: ${{ secrets.ECS_KEY }}
+          source: "nginx/conf.d/permit.conf"
+          target: "/srv/permit/"
+          overwrite: true
       - name: deploy-ecs
         uses: appleboy/ssh-action@v1.0.0
         with:

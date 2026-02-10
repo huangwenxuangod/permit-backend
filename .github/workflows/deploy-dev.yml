@@ -24,8 +24,10 @@ jobs:
           echo "IMAGE_FULL=${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_REPO }}:$TAG" >> $GITHUB_ENV
           echo "ALGO_IMAGE=${{ secrets.ACR_ALGO_IMAGE }}" >> $GITHUB_ENV
           echo "POSTGRES_IMAGE=${{ secrets.ACR_POSTGRES_IMAGE }}" >> $GITHUB_ENV
+          echo "NGINX_IMAGE=${{ secrets.ACR_NGINX_IMAGE }}" >> $GITHUB_ENV
           echo "SRC_ALGO=linzeyi/hivision_idphotos:latest" >> $GITHUB_ENV
           echo "SRC_PG=postgres:16" >> $GITHUB_ENV
+          echo "SRC_NGINX=nginx:1.27-alpine" >> $GITHUB_ENV
       - name: login-acr
         run: echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ secrets.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" --password-stdin
       - name: sync-deps-images
@@ -37,6 +39,9 @@ jobs:
           docker pull "${{ env.SRC_PG }}"
           docker tag "${{ env.SRC_PG }}" "${{ env.POSTGRES_IMAGE }}"
           docker push "${{ env.POSTGRES_IMAGE }}"
+          docker pull "${{ env.SRC_NGINX }}"
+          docker tag "${{ env.SRC_NGINX }}" "${{ env.NGINX_IMAGE }}"
+          docker push "${{ env.NGINX_IMAGE }}"
       - name: push-image
         run: |
           docker tag permit-backend:ci "${{ env.IMAGE_FULL }}"
@@ -66,7 +71,7 @@ jobs:
           username: ${{ secrets.ECS_USER }}
           key: ${{ secrets.ECS_KEY }}
           script: |
-            docker login ${{ env.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" -p "${{ secrets.ACR_PASSWORD }}"
+            docker login ${{ secrets.ACR_REGISTRY }} -u "${{ secrets.ACR_USERNAME }}" -p "${{ secrets.ACR_PASSWORD }}"
             mkdir -p /srv/permit
             cat >/srv/permit/.env <<EOF
             PERMIT_JWT_SECRET=${{ secrets.JWT_SECRET }}
@@ -80,6 +85,7 @@ jobs:
             export PERMIT_BACKEND_IMAGE=${{ env.IMAGE_FULL }}
             export PERMIT_ALGO_IMAGE=${{ env.ALGO_IMAGE }}
             export PERMIT_POSTGRES_IMAGE=${{ env.POSTGRES_IMAGE }}
+            export PERMIT_NGINX_IMAGE=${{ env.NGINX_IMAGE }}
             if docker compose version >/dev/null 2>&1; then
               docker compose pull
               docker compose up -d

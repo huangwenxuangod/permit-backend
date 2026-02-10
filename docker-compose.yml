@@ -42,7 +42,7 @@ services:
     volumes:
       - backend_data:/data
   nginx:
-    image: nginx:1.27-alpine
+    image: ${PERMIT_NGINX_IMAGE}
     ports:
       - "80:80"
       - "443:443"

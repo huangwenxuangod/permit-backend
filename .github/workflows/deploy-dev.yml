@@ -80,12 +80,11 @@ jobs:
             PERMIT_WECHAT_MCHID=${{ secrets.PERMIT_WECHAT_MCHID }}
             PERMIT_WECHAT_NOTIFY_URL=${{ secrets.PERMIT_WECHAT_NOTIFY_URL }}
             PERMIT_ASSETS_PUBLIC_URL=${{ secrets.PERMIT_ASSETS_PUBLIC_URL }}
+            PERMIT_BACKEND_IMAGE=${{ env.IMAGE_FULL }}
+            PERMIT_ALGO_IMAGE=${{ env.ALGO_IMAGE }}
+            PERMIT_POSTGRES_IMAGE=${{ env.POSTGRES_IMAGE }}
+            PERMIT_NGINX_IMAGE=${{ env.NGINX_IMAGE }}
             EOF
-            cd /srv/permit
-            export PERMIT_BACKEND_IMAGE=${{ env.IMAGE_FULL }}
-            export PERMIT_ALGO_IMAGE=${{ env.ALGO_IMAGE }}
-            export PERMIT_POSTGRES_IMAGE=${{ env.POSTGRES_IMAGE }}
-            export PERMIT_NGINX_IMAGE=${{ env.NGINX_IMAGE }}
             if docker compose version >/dev/null 2>&1; then
               docker compose pull
               docker compose up -d

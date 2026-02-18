@@ -32,9 +32,14 @@ func (r *PostgresRepo) init() error {
 		status TEXT,
 		error_msg TEXT,
 		processed_urls TEXT,
+		layout_urls TEXT,
 		created_at TIMESTAMPTZ,
 		updated_at TIMESTAMPTZ
 	);`)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS layout_urls TEXT;`)
 	if err != nil {
 		return err
 	}
@@ -115,24 +120,30 @@ func (r *PostgresRepo) GetUserByOpenID(openid string) (*domain.User, bool) {
 
 func (r *PostgresRepo) Put(t *domain.Task) error {
 	pUrls, _ := json.Marshal(t.ProcessedUrls)
-	_, err := r.db.Exec(`INSERT INTO tasks (id,user_id,spec_code,source_object_key,status,error_msg,processed_urls,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-		ON CONFLICT (id) DO UPDATE SET user_id=$2,spec_code=$3,source_object_key=$4,status=$5,error_msg=$6,processed_urls=$7,updated_at=$9`,
-		t.ID, t.UserID, t.SpecCode, t.SourceObjectKey, string(t.Status), t.ErrorMsg, string(pUrls), t.CreatedAt, t.UpdatedAt)
+	lUrls, _ := json.Marshal(t.LayoutUrls)
+	_, err := r.db.Exec(`INSERT INTO tasks (id,user_id,spec_code,source_object_key,status,error_msg,processed_urls,layout_urls,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (id) DO UPDATE SET user_id=$2,spec_code=$3,source_object_key=$4,status=$5,error_msg=$6,processed_urls=$7,layout_urls=$8,updated_at=$10`,
+		t.ID, t.UserID, t.SpecCode, t.SourceObjectKey, string(t.Status), t.ErrorMsg, string(pUrls), string(lUrls), t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
 func (r *PostgresRepo) Get(id string) (*domain.Task, bool) {
 	var t domain.Task
 	var pUrls string
-	err := r.db.QueryRow(`SELECT id,user_id,spec_code,source_object_key,status,error_msg,processed_urls,created_at,updated_at FROM tasks WHERE id=$1`, id).
-		Scan(&t.ID, &t.UserID, &t.SpecCode, &t.SourceObjectKey, (*string)(&t.Status), &t.ErrorMsg, &pUrls, &t.CreatedAt, &t.UpdatedAt)
+	var lUrls string
+	err := r.db.QueryRow(`SELECT id,user_id,spec_code,source_object_key,status,error_msg,processed_urls,layout_urls,created_at,updated_at FROM tasks WHERE id=$1`, id).
+		Scan(&t.ID, &t.UserID, &t.SpecCode, &t.SourceObjectKey, (*string)(&t.Status), &t.ErrorMsg, &pUrls, &lUrls, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, false
 	}
 	_ = json.Unmarshal([]byte(pUrls), &t.ProcessedUrls)
 	if t.ProcessedUrls == nil {
 		t.ProcessedUrls = map[string]string{}
+	}
+	_ = json.Unmarshal([]byte(lUrls), &t.LayoutUrls)
+	if t.LayoutUrls == nil {
+		t.LayoutUrls = map[string]string{}
 	}
 	return &t, true
 }

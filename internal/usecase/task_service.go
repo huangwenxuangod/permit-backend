@@ -1,14 +1,25 @@
 package usecase
 
 import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/jpeg"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
-	"time"
-	"crypto/rand"
-	"encoding/hex"
+	"sort"
 	"strings"
+	"time"
+
 	"permit-backend/internal/domain"
-	"permit-backend/internal/algo"
+	"permit-backend/internal/infrastructure/zjzapi"
 )
 
 type TaskRepo interface {
@@ -27,20 +38,18 @@ type AssetWriter interface {
 	WriteFile(taskID, filename string, data []byte) (string, error)
 }
 
-type AlgoClient interface {
-	IDPhoto(baseURL, imagePath string, height, width, dpi int) (algo.IDPhotoResp, error)
-	AddBackgroundBase64(baseURL, rgbaBase64, colorHex string, dpi int) (algo.AddBackgroundResp, error)
-	AddBackgroundFile(baseURL string, rgbaPNG []byte, colorHex string, dpi int) (algo.AddBackgroundResp, error)
-	GenerateLayoutPhotosFile(baseURL string, rgbImage []byte, height, width, dpi, kb int) (algo.LayoutResp, error)
+type ZJZClient interface {
+	IDCardMake(ctx context.Context, itemID int, imageBase64 string, colors []string, enhance, beauty int) (zjzapi.IDCardResp, error)
+	IDCardAll(ctx context.Context, itemID int, imageBase64 string, colors []string, enhance, beauty int) (zjzapi.IDCardResp, error)
 }
 
 type TaskService struct {
 	Repo       TaskRepo
 	Assets     AssetWriter
-	Algo       AlgoClient
-	AlgoURL    string
+	ZJZ        ZJZClient
 	UploadsDir string
 	AssetsDir  string
+	UseWatermark bool
 }
 
 type DownloadService struct {
@@ -48,7 +57,7 @@ type DownloadService struct {
 	Tasks TaskRepo
 }
 
-func (s *TaskService) CreateTask(userID, specCode, sourceObjectKey string, defaultBackground string, width, height, dpi int, availableColors []string, colorHexOf func(string) string) (*domain.Task, error) {
+func (s *TaskService) CreateTask(userID, specCode, sourceObjectKey string, itemID int, defaultBackground string, width, height, dpi int, availableColors []string, beauty, enhance int, useWatermark bool) (*domain.Task, error) {
 	taskID := randomID()
 	now := time.Now().UTC()
 	t := &domain.Task{
@@ -56,6 +65,10 @@ func (s *TaskService) CreateTask(userID, specCode, sourceObjectKey string, defau
 		UserID:          userID,
 		SpecCode:        specCode,
 		Spec:            domain.TaskSpec{Code: specCode, WidthPx: width, HeightPx: height, DPI: dpi},
+		ItemID:          itemID,
+		Watermark:       useWatermark,
+		Beauty:          beauty,
+		Enhance:         enhance,
 		SourceObjectKey: sourceObjectKey,
 		Status:          domain.StatusProcessing,
 		ProcessedUrls:   map[string]string{},
@@ -66,90 +79,75 @@ func (s *TaskService) CreateTask(userID, specCode, sourceObjectKey string, defau
 	}
 	_ = s.Repo.Put(t)
 	srcPath := s.objectKeyToPath(sourceObjectKey)
-	idp, err := s.Algo.IDPhoto(s.AlgoURL, srcPath, height, width, dpi)
-	if err != nil || !idp.OK {
+	raw, err := os.ReadFile(srcPath)
+	if err != nil {
 		t.Status = domain.StatusFailed
+		t.ErrorMsg = "read source error"
+		t.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.Put(t)
+		return t, nil
+	}
+	imageB64 := base64.StdEncoding.EncodeToString(raw)
+	if !useWatermark && s.UseWatermark {
+		useWatermark = true
+	}
+	resp, err := s.callIDCard(context.Background(), itemID, imageB64, availableColors, enhance, beauty, useWatermark)
+	if err != nil {
+		t.Status = domain.StatusFailed
+		t.ErrorMsg = "zjz idcard error: " + err.Error()
+		t.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.Put(t)
+		return t, nil
+	}
+	list := resp.Data.List
+	if len(list) == 0 {
+		t.Status = domain.StatusFailed
+		t.ErrorMsg = "zjz idcard empty list"
+		t.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.Put(t)
+		return t, nil
+	}
+	colors := availableColors
+	if len(colors) == 0 {
+		colors = keysSorted(list)
+		t.AvailableColors = colors
+	}
+	for _, c := range colors {
+		u, ok := list[c]
+		if !ok {
+			continue
+		}
+		data, err := s.downloadImage(u)
 		if err != nil {
-			t.ErrorMsg = "algo idphoto error: " + err.Error()
-		} else {
-			t.ErrorMsg = "algo idphoto resp not ok"
+			continue
 		}
-		t.UpdatedAt = time.Now().UTC()
-		_ = s.Repo.Put(t)
-		return t, nil
-	}
-	rgbaB64 := idp.ImageBase64Standard
-	if rgbaB64 == "" {
-		rgbaB64 = idp.ImageBase64HD
-	}
-	rgbaData, err := algo.DecodeBase64(rgbaB64)
-	if err != nil {
-		t.Status = domain.StatusFailed
-		prefix := rgbaB64
-		if len(prefix) > 32 {
-			prefix = prefix[:32]
-		}
-		t.ErrorMsg = "decode baseline error: " + prefix
-		t.UpdatedAt = time.Now().UTC()
-		_ = s.Repo.Put(t)
-		return t, nil
-	}
-	baseURL, err := s.Assets.WriteFile(taskID, "baseline.png", rgbaData)
-	if err != nil {
-		t.Status = domain.StatusFailed
-		t.ErrorMsg = "write baseline error"
-		t.UpdatedAt = time.Now().UTC()
-		_ = s.Repo.Put(t)
-		return t, nil
-	}
-	t.BaselineUrl = baseURL
-
-	bgColor := defaultBackground
-	if bgColor == "" {
-		bgColor = "white"
-	}
-	colorHex := colorHexOf(bgColor)
-	bg, err := s.Algo.AddBackgroundBase64(s.AlgoURL, rgbaB64, colorHex, dpi)
-	if err != nil || !bg.OK {
-		t.Status = domain.StatusFailed
+		url, err := s.Assets.Write(taskID, c, data)
 		if err != nil {
-			t.ErrorMsg = "algo add_background error: " + err.Error()
-		} else {
-			t.ErrorMsg = "algo add_background resp not ok"
+			continue
 		}
-		t.UpdatedAt = time.Now().UTC()
-		_ = s.Repo.Put(t)
-		return t, nil
+		t.ProcessedUrls[c] = url
 	}
-	data, err := algo.DecodeBase64(bg.ImageBase64)
-	if err != nil {
+	if len(t.ProcessedUrls) == 0 {
 		t.Status = domain.StatusFailed
-		prefix := bg.ImageBase64
-		if len(prefix) > 32 {
-			prefix = prefix[:32]
-		}
-		t.ErrorMsg = "decode image error: " + prefix
+		t.ErrorMsg = "zjz idcard download empty"
 		t.UpdatedAt = time.Now().UTC()
 		_ = s.Repo.Put(t)
 		return t, nil
 	}
-	url, err := s.Assets.Write(taskID, bgColor, data)
-	if err != nil {
-		t.Status = domain.StatusFailed
-		t.ErrorMsg = "write image error"
-		t.UpdatedAt = time.Now().UTC()
-		_ = s.Repo.Put(t)
-		return t, nil
+	bgColor := strings.TrimSpace(defaultBackground)
+	if bgColor == "" && len(colors) > 0 {
+		bgColor = colors[0]
 	}
-	t.ProcessedUrls[bgColor] = url
-
+	if u, ok := t.ProcessedUrls[bgColor]; ok {
+		t.BaselineUrl = u
+	}
 	t.Status = domain.StatusDone
 	t.UpdatedAt = time.Now().UTC()
 	_ = s.Repo.Put(t)
 	return t, nil
 }
 
-func (s *TaskService) GenerateBackground(taskID string, colorName string, dpi int, colorHexOf func(string) string) (string, error) {
+func (s *TaskService) GenerateBackground(taskID string, colorName string, dpi int) (string, error) {
 	t, ok := s.Repo.Get(taskID)
 	if !ok {
 		return "", ErrNotFound("task")
@@ -157,20 +155,31 @@ func (s *TaskService) GenerateBackground(taskID string, colorName string, dpi in
 	if u, ok2 := t.ProcessedUrls[colorName]; ok2 && u != "" {
 		return u, nil
 	}
-	p := filepath.Join(s.AssetsDir, taskID, "baseline.png")
-	data, err := os.ReadFile(p)
+	srcPath := s.objectKeyToPath(t.SourceObjectKey)
+	raw, err := os.ReadFile(srcPath)
 	if err != nil {
 		return "", err
 	}
-	colorHex := colorHexOf(colorName)
-	bg, err := s.Algo.AddBackgroundFile(s.AlgoURL, data, colorHex, dpi)
-	if err != nil || !bg.OK {
-		if err != nil {
-			return "", err
-		}
-		return "", ErrNotFound("add_background")
+	imageB64 := base64.StdEncoding.EncodeToString(raw)
+	resp, err := s.callIDCard(context.Background(), t.ItemID, imageB64, []string{colorName}, t.Enhance, t.Beauty, t.Watermark)
+	if err != nil {
+		return "", err
 	}
-	jpg, err := algo.DecodeBase64(bg.ImageBase64)
+	if len(resp.Data.List) == 0 {
+		return "", ErrNotFound("zjz_idcard")
+	}
+	u, ok2 := resp.Data.List[colorName]
+	if !ok2 {
+		for k, v := range resp.Data.List {
+			u = v
+			colorName = k
+			break
+		}
+	}
+	if u == "" {
+		return "", ErrNotFound("zjz_color")
+	}
+	jpg, err := s.downloadImage(u)
 	if err != nil {
 		return "", err
 	}
@@ -184,7 +193,7 @@ func (s *TaskService) GenerateBackground(taskID string, colorName string, dpi in
 	return url, nil
 }
 
-func (s *TaskService) GenerateLayout(taskID string, colorName string, width, height, dpi, kb int, colorHexOf func(string) string) (string, error) {
+func (s *TaskService) GenerateLayout(taskID string, colorName string, width, height, dpi, kb int) (string, error) {
 	t, ok := s.Repo.Get(taskID)
 	if !ok {
 		return "", ErrNotFound("task")
@@ -195,7 +204,7 @@ func (s *TaskService) GenerateLayout(taskID string, colorName string, width, hei
 		}
 	}
 	if _, ok2 := t.ProcessedUrls[colorName]; !ok2 {
-		bgURL, err := s.GenerateBackground(taskID, colorName, dpi, colorHexOf)
+		bgURL, err := s.GenerateBackground(taskID, colorName, dpi)
 		if err != nil || bgURL == "" {
 			return "", err
 		}
@@ -214,12 +223,7 @@ func (s *TaskService) GenerateLayout(taskID string, colorName string, width, hei
 	if dpi == 0 {
 		dpi = t.Spec.DPI
 	}
-	println("GenerateLayout size:", width, height, dpi, "kb", kb, "color", colorName)
-	resp, err := s.Algo.GenerateLayoutPhotosFile(s.AlgoURL, data, height, width, dpi, kb)
-	if err != nil || !resp.OK {
-		return "", err
-	}
-	jpg, err := algo.DecodeBase64(resp.ImageBase64)
+	jpg, err := s.generateLayout6Inch(data, width, height, dpi, kb)
 	if err != nil {
 		return "", err
 	}
@@ -236,11 +240,83 @@ func (s *TaskService) GenerateLayout(taskID string, colorName string, width, hei
 	return url, nil
 }
 
+func (s *TaskService) callIDCard(ctx context.Context, itemID int, imageBase64 string, colors []string, enhance, beauty int, useWatermark bool) (zjzapi.IDCardResp, error) {
+	if useWatermark {
+		return s.ZJZ.IDCardMake(ctx, itemID, imageBase64, colors, enhance, beauty)
+	}
+	return s.ZJZ.IDCardAll(ctx, itemID, imageBase64, colors, enhance, beauty)
+}
+
+func (s *TaskService) downloadImage(u string) ([]byte, error) {
+	resp, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, ErrNotFound("image")
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func (s *TaskService) generateLayout6Inch(data []byte, width, height, dpi, kb int) ([]byte, error) {
+	im, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	sheetW := int(float64(dpi) * 6.0)
+	sheetH := int(float64(dpi) * 4.0)
+	if sheetW <= 0 || sheetH <= 0 {
+		return nil, ErrBadRequest("dpi")
+	}
+	gap := 20
+	cols := (sheetW + gap) / (width + gap)
+	rows := (sheetH + gap) / (height + gap)
+	if cols < 1 {
+		cols = 1
+	}
+	if rows < 1 {
+		rows = 1
+	}
+	totalW := cols*width + (cols-1)*gap
+	totalH := rows*height + (rows-1)*gap
+	startX := (sheetW - totalW) / 2
+	startY := (sheetH - totalH) / 2
+	canvas := image.NewRGBA(image.Rect(0, 0, sheetW, sheetH))
+	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			x := startX + c*(width+gap)
+			y := startY + r*(height+gap)
+			rect := image.Rect(x, y, x+width, y+height)
+			draw.Draw(canvas, rect, im, image.Point{}, draw.Over)
+		}
+	}
+	quality := 85
+	if kb > 0 && kb < 200 {
+		quality = 70
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, canvas, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
 func (s *TaskService) objectKeyToPath(objectKey string) string {
 	if len(objectKey) >= 8 && objectKey[:8] == "uploads/" {
 		return filepath.Join(s.UploadsDir, objectKey[8:])
 	}
 	return filepath.Join(s.UploadsDir, objectKey)
+}
+
+func keysSorted(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (s *DownloadService) CreateToken(taskID, userID string, ttlSeconds int) (*domain.DownloadToken, error) {

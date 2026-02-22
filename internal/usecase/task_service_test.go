@@ -2,20 +2,21 @@ package usecase
 
 import (
 	"bytes"
-	"encoding/base64"
+	"context"
 	"image"
 	"image/color"
 	"image/jpeg"
-	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"permit-backend/internal/algo"
 	"permit-backend/internal/domain"
 	"permit-backend/internal/infrastructure/asset"
+	"permit-backend/internal/infrastructure/zjzapi"
 )
 
 type fakeRepo struct {
@@ -38,68 +39,31 @@ func (r *fakeRepo) Get(id string) (*domain.Task, bool) {
 	return t, ok
 }
 
-type testAlgo struct{}
-
-func (testAlgo) IDPhoto(baseURL, imagePath string, height, width, dpi int) (algo.IDPhotoResp, error) {
-	img := image.NewRGBA(image.Rect(0, 0, max(width, 100), max(height, 100)))
-	for y := 0; y < img.Rect.Dy(); y++ {
-		for x := 0; x < img.Rect.Dx(); x++ {
-			img.Set(x, y, color.RGBA{R: 0, G: 200, B: 0, A: 255})
-		}
-	}
-	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
-	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
-	return algo.IDPhotoResp{OK: true, ImageBase64Standard: "data:image/png;base64," + b64}, nil
-}
-func (testAlgo) AddBackgroundBase64(baseURL, rgbaBase64, colorHex string, dpi int) (algo.AddBackgroundResp, error) {
-	data, err := algo.DecodeBase64(rgbaBase64)
-	if err != nil {
-		return algo.AddBackgroundResp{}, err
-	}
-	im, err := png.Decode(bytes.NewReader(data))
-	if err != nil {
-		return algo.AddBackgroundResp{}, err
-	}
-	var out bytes.Buffer
-	_ = jpeg.Encode(&out, im, &jpeg.Options{Quality: 85})
-	b64 := base64.StdEncoding.EncodeToString(out.Bytes())
-	return algo.AddBackgroundResp{OK: true, ImageBase64: b64}, nil
-}
-func (testAlgo) AddBackgroundFile(baseURL string, rgbaPNG []byte, colorHex string, dpi int) (algo.AddBackgroundResp, error) {
-	im, err := png.Decode(bytes.NewReader(rgbaPNG))
-	if err != nil {
-		return algo.AddBackgroundResp{}, err
-	}
-	var out bytes.Buffer
-	_ = jpeg.Encode(&out, im, &jpeg.Options{Quality: 85})
-	b64 := base64.StdEncoding.EncodeToString(out.Bytes())
-	return algo.AddBackgroundResp{OK: true, ImageBase64: b64}, nil
-}
-func (testAlgo) GenerateLayoutPhotosFile(baseURL string, rgbImage []byte, height, width, dpi, kb int) (algo.LayoutResp, error) {
-	// Pass-through: return the given RGB image as the layout
-	b64 := base64.StdEncoding.EncodeToString(rgbImage)
-	return algo.LayoutResp{OK: true, ImageBase64: b64}, nil
+type testZJZ struct {
+	baseURL string
 }
 
-func colorHexOf(name string) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "white":
-		return "ffffff"
-	case "blue":
-		return "638cce"
-	case "red":
-		return "ff0000"
-	default:
-		return "ffffff"
-	}
+func (t testZJZ) IDCardMake(ctx context.Context, itemID int, imageBase64 string, colors []string, enhance, beauty int) (zjzapi.IDCardResp, error) {
+	return t.reply(colors), nil
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
+func (t testZJZ) IDCardAll(ctx context.Context, itemID int, imageBase64 string, colors []string, enhance, beauty int) (zjzapi.IDCardResp, error) {
+	return t.reply(colors), nil
+}
+
+func (t testZJZ) reply(colors []string) zjzapi.IDCardResp {
+	if len(colors) == 0 {
+		colors = []string{"white", "blue"}
 	}
-	return b
+	list := map[string]string{}
+	for _, c := range colors {
+		list[c] = t.baseURL + "/img/" + c + ".jpg"
+	}
+	return zjzapi.IDCardResp{
+		Code: 0,
+		Msg:  "ok",
+		Data: zjzapi.IDCardData{List: list},
+	}
 }
 
 func makeSampleJPEG(w, h int) []byte {
@@ -117,6 +81,16 @@ func makeSampleJPEG(w, h int) []byte {
 func TestTaskService_EndToEnd(t *testing.T) {
 	uploadsDir := t.TempDir()
 	assetsDir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/img/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		img := makeSampleJPEG(120, 160)
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(img)
+	}))
+	defer server.Close()
 
 	// Prepare uploaded source image
 	src := makeSampleJPEG(120, 160)
@@ -128,18 +102,16 @@ func TestTaskService_EndToEnd(t *testing.T) {
 
 	repo := &fakeRepo{}
 	fs := asset.NewFSWriter(assetsDir, "")
-	al := testAlgo{}
 	svc := &TaskService{
 		Repo:       repo,
 		Assets:     fs,
-		Algo:       al,
-		AlgoURL:    "http://127.0.0.1:8080",
+		ZJZ:        testZJZ{baseURL: server.URL},
 		UploadsDir: uploadsDir,
 		AssetsDir:  assetsDir,
 	}
 
 	available := []string{"white", "blue"}
-	tk, err := svc.CreateTask("user-1", "cn_1inch", "uploads/"+srcName, "white", 295, 413, 300, available, colorHexOf)
+	tk, err := svc.CreateTask("user-1", "cn_1inch", "uploads/"+srcName, 1, "white", 295, 413, 300, available, 0, 0, false)
 	if err != nil {
 		t.Fatalf("CreateTask error: %v", err)
 	}
@@ -154,7 +126,7 @@ func TestTaskService_EndToEnd(t *testing.T) {
 	}
 
 	// Generate another background color
-	urlBlue, err := svc.GenerateBackground(tk.ID, "blue", tk.Spec.DPI, colorHexOf)
+	urlBlue, err := svc.GenerateBackground(tk.ID, "blue", tk.Spec.DPI)
 	if err != nil {
 		t.Fatalf("GenerateBackground blue failed: %v", err)
 	}
@@ -163,7 +135,7 @@ func TestTaskService_EndToEnd(t *testing.T) {
 	}
 
 	// Generate 6-inch layout
-	urlLayout, err := svc.GenerateLayout(tk.ID, "white", tk.Spec.WidthPx, tk.Spec.HeightPx, tk.Spec.DPI, 200, colorHexOf)
+	urlLayout, err := svc.GenerateLayout(tk.ID, "white", tk.Spec.WidthPx, tk.Spec.HeightPx, tk.Spec.DPI, 200)
 	if err != nil {
 		t.Fatalf("GenerateLayout error: %v", err)
 	}

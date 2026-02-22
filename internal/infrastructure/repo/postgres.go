@@ -28,6 +28,10 @@ func (r *PostgresRepo) init() error {
 		id TEXT PRIMARY KEY,
 		user_id TEXT,
 		spec_code TEXT,
+		item_id INT,
+		watermark BOOLEAN,
+		beauty INT,
+		enhance INT,
 		source_object_key TEXT,
 		status TEXT,
 		error_msg TEXT,
@@ -40,6 +44,22 @@ func (r *PostgresRepo) init() error {
 		return err
 	}
 	_, err = r.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS layout_urls TEXT;`)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_id INT;`)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS watermark BOOLEAN;`)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS beauty INT;`)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS enhance INT;`)
 	if err != nil {
 		return err
 	}
@@ -121,10 +141,10 @@ func (r *PostgresRepo) GetUserByOpenID(openid string) (*domain.User, bool) {
 func (r *PostgresRepo) Put(t *domain.Task) error {
 	pUrls, _ := json.Marshal(t.ProcessedUrls)
 	lUrls, _ := json.Marshal(t.LayoutUrls)
-	_, err := r.db.Exec(`INSERT INTO tasks (id,user_id,spec_code,source_object_key,status,error_msg,processed_urls,layout_urls,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (id) DO UPDATE SET user_id=$2,spec_code=$3,source_object_key=$4,status=$5,error_msg=$6,processed_urls=$7,layout_urls=$8,updated_at=$10`,
-		t.ID, t.UserID, t.SpecCode, t.SourceObjectKey, string(t.Status), t.ErrorMsg, string(pUrls), string(lUrls), t.CreatedAt, t.UpdatedAt)
+	_, err := r.db.Exec(`INSERT INTO tasks (id,user_id,spec_code,item_id,watermark,beauty,enhance,source_object_key,status,error_msg,processed_urls,layout_urls,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		ON CONFLICT (id) DO UPDATE SET user_id=$2,spec_code=$3,item_id=$4,watermark=$5,beauty=$6,enhance=$7,source_object_key=$8,status=$9,error_msg=$10,processed_urls=$11,layout_urls=$12,updated_at=$14`,
+		t.ID, t.UserID, t.SpecCode, t.ItemID, t.Watermark, t.Beauty, t.Enhance, t.SourceObjectKey, string(t.Status), t.ErrorMsg, string(pUrls), string(lUrls), t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
@@ -132,8 +152,8 @@ func (r *PostgresRepo) Get(id string) (*domain.Task, bool) {
 	var t domain.Task
 	var pUrls string
 	var lUrls string
-	err := r.db.QueryRow(`SELECT id,user_id,spec_code,source_object_key,status,error_msg,processed_urls,layout_urls,created_at,updated_at FROM tasks WHERE id=$1`, id).
-		Scan(&t.ID, &t.UserID, &t.SpecCode, &t.SourceObjectKey, (*string)(&t.Status), &t.ErrorMsg, &pUrls, &lUrls, &t.CreatedAt, &t.UpdatedAt)
+	err := r.db.QueryRow(`SELECT id,user_id,spec_code,item_id,watermark,beauty,enhance,source_object_key,status,error_msg,processed_urls,layout_urls,created_at,updated_at FROM tasks WHERE id=$1`, id).
+		Scan(&t.ID, &t.UserID, &t.SpecCode, &t.ItemID, &t.Watermark, &t.Beauty, &t.Enhance, &t.SourceObjectKey, (*string)(&t.Status), &t.ErrorMsg, &pUrls, &lUrls, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, false
 	}

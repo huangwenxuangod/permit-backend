@@ -32,6 +32,10 @@ type Task struct {
 	UserID          string            `json:"userId,omitempty"`
 	SpecCode        string            `json:"specCode"`
 	Spec            TaskSpec          `json:"spec"`
+	ItemID          int               `json:"itemId,omitempty"`
+	Watermark       bool              `json:"watermark,omitempty"`
+	Beauty          int               `json:"beauty,omitempty"`
+	Enhance         int               `json:"enhance,omitempty"`
 	SourceObjectKey string            `json:"sourceObjectKey"`
 	Status          Status            `json:"status"`
 	BaselineUrl     string            `json:"baselineUrl,omitempty"`

@@ -14,6 +14,10 @@ type Config struct {
 	JWTSecret       string
 	LogJSON         bool
 	AlgoURL         string
+	ZJZBaseURL      string
+	ZJZKey          string
+	ZJZAccessToken  string
+	ZJZWatermark    bool
 	PayMock         bool
 	WechatAppID     string
 	WechatSecret    string
@@ -32,6 +36,10 @@ func Default() Config {
 		JWTSecret:       "",
 		LogJSON:         true,
 		AlgoURL:         "http://127.0.0.1:8080",
+		ZJZBaseURL:      "https://api.zjzapi.com",
+		ZJZKey:          "",
+		ZJZAccessToken:  "",
+		ZJZWatermark:    false,
 		PayMock:         true,
 		WechatAppID:     "",
 		WechatSecret:    "",
@@ -76,6 +84,23 @@ func fromEnv(c Config) Config {
 	}
 	if v := os.Getenv("PERMIT_ALGO_URL"); v != "" {
 		c.AlgoURL = v
+	}
+	if v := os.Getenv("PERMIT_ZJZ_BASE_URL"); v != "" {
+		c.ZJZBaseURL = v
+	}
+	if v := os.Getenv("PERMIT_ZJZ_KEY"); v != "" {
+		c.ZJZKey = v
+	}
+	if v := os.Getenv("PERMIT_ZJZ_ACCESS_TOKEN"); v != "" {
+		c.ZJZAccessToken = v
+	}
+	if v := os.Getenv("PERMIT_ZJZ_WATERMARK"); v != "" {
+		switch v {
+		case "1", "true", "TRUE":
+			c.ZJZWatermark = true
+		case "0", "false", "FALSE":
+			c.ZJZWatermark = false
+		}
 	}
 	if v := os.Getenv("PERMIT_PAY_MOCK"); v != "" {
 		switch v {

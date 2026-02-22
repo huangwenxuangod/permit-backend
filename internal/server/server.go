@@ -2,7 +2,9 @@ package server
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -12,14 +14,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"permit-backend/internal/algo"
 	"permit-backend/internal/config"
 	"permit-backend/internal/domain"
 	"permit-backend/internal/infrastructure/asset"
 	"permit-backend/internal/infrastructure/repo"
 	"permit-backend/internal/infrastructure/wechat"
+	"permit-backend/internal/infrastructure/zjzapi"
 	"permit-backend/internal/usecase"
 )
 
@@ -31,6 +35,14 @@ type Server struct {
 	authSvc  *usecase.AuthService
 	downloadSvc *usecase.DownloadService
 	pg       *repo.PostgresRepo
+	zjz      *zjzapi.Client
+	itemCache map[string]int
+	itemCacheAt time.Time
+	itemCacheMu sync.Mutex
+	aiPhotoNotifies map[string]map[string]string
+	aiPhotoMu sync.Mutex
+	receiptNotifies map[string]map[string]string
+	receiptMu sync.Mutex
 }
 
 func New(cfg config.Config) *Server {
@@ -68,16 +80,20 @@ func New(cfg config.Config) *Server {
 	}
 
 	fs := asset.NewFSWriter(cfg.AssetsDir, cfg.AssetsPublicURL)
-	al := algoAdapter{}
+	zjz := &zjzapi.Client{BaseURL: cfg.ZJZBaseURL, Key: cfg.ZJZKey, AccessToken: cfg.ZJZAccessToken}
 
 	s.taskSvc = &usecase.TaskService{
 		Repo:       taskRepo,
 		Assets:     fs,
-		Algo:       al,
-		AlgoURL:    cfg.AlgoURL,
+		ZJZ:        zjz,
 		UploadsDir: cfg.UploadsDir,
 		AssetsDir:  cfg.AssetsDir,
+		UseWatermark: cfg.ZJZWatermark,
 	}
+	s.zjz = zjz
+	s.itemCache = map[string]int{}
+	s.aiPhotoNotifies = map[string]map[string]string{}
+	s.receiptNotifies = map[string]map[string]string{}
 	s.orderSvc = &usecase.OrderService{
 		Repo:        orderRepo,
 		PayMock:     cfg.PayMock,
@@ -163,6 +179,17 @@ func (s *Server) routesGin() {
 	s.engine.POST("/api/pay/wechat", func(c *gin.Context) { s.handlePayWechat(c.Writer, c.Request) })
 	s.engine.POST("/api/pay/douyin", func(c *gin.Context) { s.handlePayDouyin(c.Writer, c.Request) })
 	s.engine.POST("/api/pay/callback", func(c *gin.Context) { s.handlePayCallback(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/item/list", func(c *gin.Context) { s.handleZJZItemList(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/item/get", func(c *gin.Context) { s.handleZJZItemGet(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/receipt/make", func(c *gin.Context) { s.handleZJZReceiptMake(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/receipt/submit", func(c *gin.Context) { s.handleZJZReceiptSubmit(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/receipt/notify", func(c *gin.Context) { s.handleZJZReceiptNotify(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/ai-photo/make", func(c *gin.Context) { s.handleZJZAIPhotoMake(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/ai-photo/templates", func(c *gin.Context) { s.handleZJZAIPhotoTemplates(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/ai-photo/notify", func(c *gin.Context) { s.handleZJZAIPhotoNotify(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/face/enhance", func(c *gin.Context) { s.handleZJZFaceEnhance(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/user/info", func(c *gin.Context) { s.handleZJZUserInfo(c.Writer, c.Request) })
+	s.engine.POST("/api/zjz/user/app", func(c *gin.Context) { s.handleZJZUserApp(c.Writer, c.Request) })
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +235,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 type createTaskReq struct {
 	SpecCode          string   `json:"specCode"`
+	ItemID            int      `json:"itemId"`
 	SourceObjectKey   string   `json:"sourceObjectKey"`
 	DefaultBackground string   `json:"defaultBackground"`
 	AvailableColors   []string `json:"availableColors"`
@@ -215,6 +243,9 @@ type createTaskReq struct {
 	WidthPx           int      `json:"widthPx"`
 	HeightPx          int      `json:"heightPx"`
 	DPI               int      `json:"dpi"`
+	Beauty            int      `json:"beauty"`
+	Enhance           int      `json:"enhance"`
+	Watermark         bool     `json:"watermark"`
 }
 
 type generateBackgroundReq struct {
@@ -230,6 +261,44 @@ type generateLayoutReq struct {
 	HeightPx int    `json:"heightPx"`
 	DPI      int    `json:"dpi"`
 	KB       int    `json:"kb"`
+}
+
+type zjzItemGetReq struct {
+	ItemID int `json:"itemId"`
+}
+
+type zjzReceiptMakeReq struct {
+	ItemID          int    `json:"itemId"`
+	ImageBase64     string `json:"imageBase64"`
+	SourceObjectKey string `json:"sourceObjectKey"`
+}
+
+type zjzReceiptSubmitReq struct {
+	PicID     string `json:"picId"`
+	NoticeURL string `json:"noticeUrl"`
+	Param     string `json:"param"`
+}
+
+type zjzAIPhotoMakeReq struct {
+	TemplateID       string   `json:"templateId"`
+	Images           []string `json:"images"`
+	SourceObjectKeys []string `json:"sourceObjectKeys"`
+	NoticeURL        string   `json:"noticeUrl"`
+}
+
+type zjzFaceEnhanceReq struct {
+	ImageBase64     string `json:"imageBase64"`
+	SourceObjectKey string `json:"sourceObjectKey"`
+	Size            string `json:"size"`
+}
+
+type zjzUserInfoReq struct {
+	AccessToken string `json:"accessToken"`
+}
+
+type zjzUserAppReq struct {
+	AccessToken string `json:"accessToken"`
+	Key         string `json:"key"`
 }
 
 type Spec struct {
@@ -643,7 +712,17 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 			req.AvailableColors = spec.BgColors
 		}
 	}
-	t, _ := s.taskSvc.CreateTask(userID, orDefault(req.SpecCode, "passport"), req.SourceObjectKey, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, colorHexOf)
+	itemID := req.ItemID
+	if itemID == 0 {
+		if id, err := s.resolveItemID(spec.Name); err == nil {
+			itemID = id
+		}
+	}
+	if itemID == 0 {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "itemId required")
+		return
+	}
+	t, _ := s.taskSvc.CreateTask(userID, orDefault(req.SpecCode, "passport"), req.SourceObjectKey, itemID, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, req.Beauty, req.Enhance, req.Watermark)
 	s.json(w, r, http.StatusOK, t)
 }
 
@@ -677,7 +756,7 @@ func (s *Server) handleGenerateBackground(w http.ResponseWriter, r *http.Request
 	if dpi == 0 {
 		dpi = t.Spec.DPI
 	}
-	url, err := s.taskSvc.GenerateBackground(id, req.Color, dpi, colorHexOf)
+	url, err := s.taskSvc.GenerateBackground(id, req.Color, dpi)
 	if err != nil {
 		if _, ok := err.(usecase.ErrNotFound); ok {
 			s.err(w, r, http.StatusNotFound, "NotFound", err.Error())
@@ -735,7 +814,7 @@ func (s *Server) handleGenerateLayout(w http.ResponseWriter, r *http.Request) {
 			dpi = sp.DPI
 		}
 	}
-	url, err := s.taskSvc.GenerateLayout(id, req.Color, width, height, dpi, req.KB, colorHexOf)
+	url, err := s.taskSvc.GenerateLayout(id, req.Color, width, height, dpi, req.KB)
 	if err != nil {
 		if _, ok := err.(usecase.ErrNotFound); ok {
 			s.err(w, r, http.StatusNotFound, "NotFound", err.Error())
@@ -751,6 +830,283 @@ func (s *Server) handleGenerateLayout(w http.ResponseWriter, r *http.Request) {
 		"status": "done",
 	})
 }
+
+func (s *Server) handleZJZItemList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	if strings.TrimSpace(s.cfg.ZJZKey) == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "zjz key required")
+		return
+	}
+	resp, err := s.zjz.ItemList(r.Context())
+	if err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", err.Error())
+		return
+	}
+	s.json(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleZJZItemGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req zjzItemGetReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if req.ItemID == 0 {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "itemId required")
+		return
+	}
+	resp, err := s.zjz.ItemGet(r.Context(), req.ItemID)
+	if err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", err.Error())
+		return
+	}
+	s.json(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleZJZReceiptMake(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req zjzReceiptMakeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if req.ItemID == 0 {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "itemId required")
+		return
+	}
+	imageB64, err := s.readImageBase64(req.SourceObjectKey, req.ImageBase64)
+	if err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	resp, err := s.zjz.ReceiptMake(r.Context(), req.ItemID, imageB64)
+	if err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", err.Error())
+		return
+	}
+	s.json(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleZJZReceiptSubmit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req zjzReceiptSubmitReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.PicID) == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "picId required")
+		return
+	}
+	if strings.TrimSpace(req.NoticeURL) == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "noticeUrl required")
+		return
+	}
+	resp, err := s.zjz.ReceiptSubmit(r.Context(), req.PicID, req.NoticeURL, req.Param)
+	if err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", err.Error())
+		return
+	}
+	s.json(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleZJZReceiptNotify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid form")
+		return
+	}
+	payload := map[string]string{}
+	for k := range r.Form {
+		payload[k] = r.FormValue(k)
+	}
+	key := payload["pic_id"]
+	if key == "" {
+		key = randomID()
+	}
+	s.receiptMu.Lock()
+	s.receiptNotifies[key] = payload
+	s.receiptMu.Unlock()
+	s.json(w, r, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleZJZAIPhotoMake(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req zjzAIPhotoMakeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.TemplateID) == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "templateId required")
+		return
+	}
+	if strings.TrimSpace(req.NoticeURL) == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "noticeUrl required")
+		return
+	}
+	images := make([]string, 0, len(req.Images))
+	for _, img := range req.Images {
+		if strings.TrimSpace(img) != "" {
+			images = append(images, img)
+		}
+	}
+	if len(images) == 0 && len(req.SourceObjectKeys) > 0 {
+		for _, key := range req.SourceObjectKeys {
+			b64, err := s.readImageBase64(key, "")
+			if err != nil {
+				s.err(w, r, http.StatusBadRequest, "BadRequest", err.Error())
+				return
+			}
+			images = append(images, b64)
+		}
+	}
+	if len(images) == 0 {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "images required")
+		return
+	}
+	resp, err := s.zjz.AIPhotoMake(r.Context(), req.TemplateID, images, req.NoticeURL)
+	if err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", err.Error())
+		return
+	}
+	s.json(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleZJZAIPhotoTemplates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	resp, err := s.zjz.AIPhotoTemplates(r.Context())
+	if err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", err.Error())
+		return
+	}
+	s.json(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleZJZAIPhotoNotify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid form")
+		return
+	}
+	payload := map[string]string{}
+	for k := range r.Form {
+		payload[k] = r.FormValue(k)
+	}
+	key := payload["pic_id"]
+	if key == "" {
+		key = randomID()
+	}
+	s.aiPhotoMu.Lock()
+	s.aiPhotoNotifies[key] = payload
+	s.aiPhotoMu.Unlock()
+	s.json(w, r, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleZJZFaceEnhance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req zjzFaceEnhanceReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	imageB64, err := s.readImageBase64(req.SourceObjectKey, req.ImageBase64)
+	if err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	resp, err := s.zjz.FaceEnhance(r.Context(), imageB64, req.Size)
+	if err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", err.Error())
+		return
+	}
+	s.json(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleZJZUserInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req zjzUserInfoReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	token := strings.TrimSpace(req.AccessToken)
+	if token == "" {
+		token = s.cfg.ZJZAccessToken
+	}
+	if token == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "accessToken required")
+		return
+	}
+	resp, err := s.zjz.UserInfo(r.Context(), token)
+	if err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", err.Error())
+		return
+	}
+	s.json(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleZJZUserApp(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	var req zjzUserAppReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	token := strings.TrimSpace(req.AccessToken)
+	if token == "" {
+		token = s.cfg.ZJZAccessToken
+	}
+	key := strings.TrimSpace(req.Key)
+	if key == "" {
+		key = s.cfg.ZJZKey
+	}
+	if token == "" || key == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "accessToken and key required")
+		return
+	}
+	resp, err := s.zjz.UserApp(r.Context(), token, key)
+	if err != nil {
+		s.err(w, r, http.StatusInternalServerError, "ServerError", err.Error())
+		return
+	}
+	s.json(w, r, http.StatusOK, resp)
+}
+
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
@@ -994,7 +1350,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			return
 		}
 		p := c.Request.URL.Path
-		if strings.HasPrefix(p, "/assets") || p == "/api/login" || strings.HasPrefix(p, "/api/download/file") {
+		if strings.HasPrefix(p, "/assets") || p == "/api/login" || strings.HasPrefix(p, "/api/download/file") || p == "/api/zjz/receipt/notify" || p == "/api/zjz/ai-photo/notify" {
 			c.Next()
 			return
 		}
@@ -1011,32 +1367,59 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 	}
 }
 
-func colorHexOf(name string) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "white":
-		return "ffffff"
-	case "blue":
-		return "638cce"
-	case "red":
-		return "ff0000"
-	default:
-		return "ffffff"
+func (s *Server) readImageBase64(sourceObjectKey, imageBase64 string) (string, error) {
+	if strings.TrimSpace(imageBase64) != "" {
+		return strings.TrimSpace(imageBase64), nil
 	}
+	if strings.TrimSpace(sourceObjectKey) == "" {
+		return "", usecase.ErrBadRequest("imageBase64 or sourceObjectKey required")
+	}
+	path := s.objectKeyToPath(sourceObjectKey)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
-type algoAdapter struct{}
+func (s *Server) objectKeyToPath(objectKey string) string {
+	if len(objectKey) >= 8 && objectKey[:8] == "uploads/" {
+		return filepath.Join(s.cfg.UploadsDir, objectKey[8:])
+	}
+	return filepath.Join(s.cfg.UploadsDir, objectKey)
+}
 
-func (algoAdapter) IDPhoto(baseURL, imagePath string, height, width, dpi int) (algo.IDPhotoResp, error) {
-	return algo.IDPhoto(baseURL, imagePath, height, width, dpi)
-}
-func (algoAdapter) AddBackgroundBase64(baseURL, rgbaBase64, colorHex string, dpi int) (algo.AddBackgroundResp, error) {
-	return algo.AddBackgroundBase64(baseURL, rgbaBase64, colorHex, dpi)
-}
-func (algoAdapter) AddBackgroundFile(baseURL string, rgbaPNG []byte, colorHex string, dpi int) (algo.AddBackgroundResp, error) {
-	return algo.AddBackgroundFile(baseURL, rgbaPNG, colorHex, dpi)
-}
-func (algoAdapter) GenerateLayoutPhotosFile(baseURL string, rgbImage []byte, height, width, dpi, kb int) (algo.LayoutResp, error) {
-	return algo.GenerateLayoutPhotosFile(baseURL, rgbImage, height, width, dpi, kb)
+func (s *Server) resolveItemID(name string) (int, error) {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return 0, usecase.ErrBadRequest("spec name required")
+	}
+	s.itemCacheMu.Lock()
+	if time.Since(s.itemCacheAt) < 10*time.Minute && len(s.itemCache) > 0 {
+		if id, ok := s.itemCache[n]; ok {
+			s.itemCacheMu.Unlock()
+			return id, nil
+		}
+	}
+	s.itemCacheMu.Unlock()
+	resp, err := s.zjz.ItemList(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	cache := map[string]int{}
+	for _, it := range resp.Data.List {
+		id, err := strconv.Atoi(strings.TrimSpace(it.ItemID))
+		if err != nil {
+			continue
+		}
+		cache[it.Name] = id
+	}
+	s.itemCacheMu.Lock()
+	s.itemCache = cache
+	s.itemCacheAt = time.Now()
+	id := s.itemCache[n]
+	s.itemCacheMu.Unlock()
+	return id, nil
 }
 
 type pgOrderRepo struct{ pg *repo.PostgresRepo }

@@ -63,6 +63,9 @@ func New(cfg config.Config) *Server {
 	if downloadRepo == nil {
 		downloadRepo = repo.NewMemoryDownloadTokenRepo()
 	}
+	if s.pg != nil {
+		s.seedSpecs()
+	}
 
 	fs := asset.NewFSWriter(cfg.AssetsDir, cfg.AssetsPublicURL)
 	al := algoAdapter{}
@@ -252,28 +255,80 @@ func (s *Server) handleSpecs(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
 		return
 	}
+	var items []Spec
 	if s.pg != nil {
-		if items, err := s.pg.ListSpecs(); err == nil && len(items) > 0 {
-			out := make([]Spec, 0, len(items))
-			for _, it := range items {
-				out = append(out, Spec{
+		if pgItems, err := s.pg.ListSpecs(); err == nil && len(pgItems) > 0 {
+			items = make([]Spec, 0, len(pgItems))
+			for _, it := range pgItems {
+				items = append(items, Spec{
 					Code: it.Code, Name: it.Name, WidthPx: it.WidthPx, HeightPx: it.HeightPx, DPI: it.DPI, BgColors: it.BgColors,
 				})
 			}
-			s.json(w, r, http.StatusOK, out)
-			return
 		}
 	}
-	s.json(w, r, http.StatusOK, s.defaultSpecs())
+	if len(items) == 0 {
+		items = s.defaultSpecs()
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		query = strings.TrimSpace(r.URL.Query().Get("query"))
+	}
+	if query != "" {
+		q := strings.ToLower(query)
+		filtered := make([]Spec, 0, len(items))
+		for _, it := range items {
+			if strings.Contains(strings.ToLower(it.Code), q) || strings.Contains(strings.ToLower(it.Name), q) {
+				filtered = append(filtered, it)
+			}
+		}
+		items = filtered
+	}
+	s.json(w, r, http.StatusOK, items)
 }
 
 func (s *Server) defaultSpecs() []Spec {
+	siteBg := []string{"white", "blue", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}
 	return []Spec{
-		{Code: "passport", Name: "护照", WidthPx: 354, HeightPx: 472, DPI: 300, BgColors: []string{"white", "blue", "red"}},
-		{Code: "cn_1inch", Name: "一寸", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: []string{"white", "blue", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}},
-		{Code: "cn_2inch", Name: "二寸", WidthPx: 413, HeightPx: 579, DPI: 300, BgColors: []string{"white", "blue", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}},
-		{Code: "cn_2inch_small", Name: "小二寸", WidthPx: 413, HeightPx: 531, DPI: 300, BgColors: []string{"white", "blue", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}},
-		{Code: "cn_1inch_large", Name: "大一寸", WidthPx: 390, HeightPx: 567, DPI: 300, BgColors: []string{"white", "blue", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}},
+		{Code: "hkmo_pass", Name: "港澳通行证", WidthPx: 390, HeightPx: 567, DPI: 300, BgColors: siteBg},
+		{Code: "id_card", Name: "身份证", WidthPx: 358, HeightPx: 441, DPI: 300, BgColors: siteBg},
+		{Code: "passport", Name: "护照", WidthPx: 390, HeightPx: 567, DPI: 300, BgColors: siteBg},
+		{Code: "social_security", Name: "社保卡", WidthPx: 358, HeightPx: 441, DPI: 300, BgColors: siteBg},
+		{Code: "driver_license", Name: "驾驶证", WidthPx: 260, HeightPx: 378, DPI: 300, BgColors: siteBg},
+		{Code: "security_guard", Name: "保安证", WidthPx: 358, HeightPx: 441, DPI: 300, BgColors: siteBg},
+		{Code: "residence_permit", Name: "居住证", WidthPx: 358, HeightPx: 441, DPI: 300, BgColors: siteBg},
+		{Code: "student_card", Name: "学生证", WidthPx: 358, HeightPx: 441, DPI: 300, BgColors: siteBg},
+		{Code: "e_driver_license", Name: "电子驾驶证", WidthPx: 260, HeightPx: 378, DPI: 300, BgColors: siteBg},
+		{Code: "cn_1inch", Name: "一寸", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: siteBg},
+		{Code: "cn_1inch_small", Name: "小一寸", WidthPx: 260, HeightPx: 378, DPI: 300, BgColors: siteBg},
+		{Code: "cn_1inch_large", Name: "大一寸", WidthPx: 390, HeightPx: 567, DPI: 300, BgColors: siteBg},
+		{Code: "cn_2inch", Name: "二寸", WidthPx: 413, HeightPx: 579, DPI: 300, BgColors: siteBg},
+		{Code: "cn_2inch_small", Name: "小二寸", WidthPx: 413, HeightPx: 531, DPI: 300, BgColors: siteBg},
+		{Code: "cn_2inch_large", Name: "大二寸", WidthPx: 413, HeightPx: 626, DPI: 300, BgColors: siteBg},
+		{Code: "cn_5inch", Name: "五寸", WidthPx: 1050, HeightPx: 1499, DPI: 300, BgColors: siteBg},
+		{Code: "teacher_cert", Name: "教师资格证", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: siteBg},
+		{Code: "civil_service_exam", Name: "国家公务员考试", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: siteBg},
+		{Code: "junior_accounting_exam", Name: "初级会计考试", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: siteBg},
+		{Code: "cet_exam", Name: "英语四六级考试", WidthPx: 144, HeightPx: 192, DPI: 300, BgColors: siteBg},
+		{Code: "computer_rank_exam", Name: "计算机等级考试", WidthPx: 390, HeightPx: 567, DPI: 300, BgColors: siteBg},
+		{Code: "postgraduate_exam", Name: "研究生考试", WidthPx: 531, HeightPx: 709, DPI: 300, BgColors: siteBg},
+		{Code: "us_visa", Name: "美国签证", WidthPx: 600, HeightPx: 600, DPI: 300, BgColors: siteBg},
+		{Code: "jp_visa", Name: "日本签证", WidthPx: 531, HeightPx: 531, DPI: 300, BgColors: siteBg},
+		{Code: "kr_visa", Name: "韩国签证", WidthPx: 413, HeightPx: 531, DPI: 300, BgColors: siteBg},
+	}
+}
+
+func (s *Server) seedSpecs() {
+	if s.pg == nil {
+		return
+	}
+	defs := make([]domain.SpecDef, 0, len(s.defaultSpecs()))
+	for _, it := range s.defaultSpecs() {
+		defs = append(defs, domain.SpecDef{
+			Code: it.Code, Name: it.Name, WidthPx: it.WidthPx, HeightPx: it.HeightPx, DPI: it.DPI, BgColors: it.BgColors,
+		})
+	}
+	if err := s.pg.UpsertSpecs(defs); err != nil {
+		log.Printf("seed specs failed: %v", err)
 	}
 }
 
@@ -286,13 +341,24 @@ func (s *Server) handleUpdateSpecs(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusNotImplemented, "NotImplemented", "PostgreSQL not configured")
 		return
 	}
-	siteBg := []string{"blue", "white", "red", "tint", "grey", "gradient", "dark_blue", "sky_blue"}
-	specs := []domain.SpecDef{
-		{Code: "cn_1inch", Name: "一寸", WidthPx: 295, HeightPx: 413, DPI: 300, BgColors: siteBg},
-		{Code: "cn_2inch", Name: "二寸", WidthPx: 413, HeightPx: 579, DPI: 300, BgColors: siteBg},
-		{Code: "cn_2inch_small", Name: "小二寸", WidthPx: 413, HeightPx: 531, DPI: 300, BgColors: siteBg},
-		{Code: "cn_1inch_large", Name: "大一寸", WidthPx: 390, HeightPx: 567, DPI: 300, BgColors: siteBg},
-		{Code: "cn_social_security", Name: "社保证（300dpi，无回执）", WidthPx: 358, HeightPx: 441, DPI: 300, BgColors: []string{"white"}},
+	var req []Spec
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&req); err != nil && err != io.EOF {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	if len(req) == 0 {
+		req = s.defaultSpecs()
+	}
+	specs := make([]domain.SpecDef, 0, len(req))
+	for _, it := range req {
+		if strings.TrimSpace(it.Code) == "" || strings.TrimSpace(it.Name) == "" || it.WidthPx <= 0 || it.HeightPx <= 0 || it.DPI <= 0 {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid spec fields")
+			return
+		}
+		specs = append(specs, domain.SpecDef{
+			Code: it.Code, Name: it.Name, WidthPx: it.WidthPx, HeightPx: it.HeightPx, DPI: it.DPI, BgColors: it.BgColors,
+		})
 	}
 	if err := s.pg.UpsertSpecs(specs); err != nil {
 		s.err(w, r, http.StatusInternalServerError, "ServerError", "update specs failed")

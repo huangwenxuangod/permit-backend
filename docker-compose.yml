@@ -14,11 +14,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-  algo:
-    image: ${PERMIT_ALGO_IMAGE}
-    command: ["python3", "deploy_api.py"]
-    ports:
-      - "8080:8080"
   backend:
     image: ${PERMIT_BACKEND_IMAGE}
     ports:
@@ -31,14 +26,15 @@ services:
       PERMIT_ASSETS_DIR: /data/assets
       PERMIT_ASSETS_PUBLIC_URL: ${PERMIT_ASSETS_PUBLIC_URL}
       PERMIT_UPLOADS_DIR: /data/uploads
-      PERMIT_ALGO_URL: http://algo:8080
+      PERMIT_ZJZ_BASE_URL: ${PERMIT_ZJZ_BASE_URL}
+      PERMIT_ZJZ_KEY: ${PERMIT_ZJZ_KEY}
+      PERMIT_ZJZ_ACCESS_TOKEN: ${PERMIT_ZJZ_ACCESS_TOKEN}
+      PERMIT_ZJZ_WATERMARK: ${PERMIT_ZJZ_WATERMARK}
       PERMIT_PAY_MOCK: "true"
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/permit?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy
-      algo:
-        condition: service_started
     volumes:
       - backend_data:/data
   nginx:

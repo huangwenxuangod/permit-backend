@@ -20,7 +20,10 @@ psql -U postgres -h 127.0.0.1 -c "CREATE DATABASE permit;"
 ```powershell
 Set-Location d:\dev\one-permit\permit-backend
 "POSTGRES_DSN=postgres://postgres:yourpass@127.0.0.1:5432/permit?sslmode=disable" | Out-File -FilePath .env.local -Append -Encoding utf8
-"PERMIT_ALGO_URL=http://127.0.0.1:8080" | Out-File -FilePath .env.local -Append -Encoding utf8
+"PERMIT_ZJZ_BASE_URL=https://api.zjzapi.com" | Out-File -FilePath .env.local -Append -Encoding utf8
+"PERMIT_ZJZ_KEY=your_key" | Out-File -FilePath .env.local -Append -Encoding utf8
+"PERMIT_ZJZ_ACCESS_TOKEN=your_access_token" | Out-File -FilePath .env.local -Append -Encoding utf8
+"PERMIT_ZJZ_WATERMARK=false" | Out-File -FilePath .env.local -Append -Encoding utf8
 "PERMIT_PAY_MOCK=true" | Out-File -FilePath .env.local -Append -Encoding utf8
 ```
 
@@ -28,7 +31,10 @@ Set-Location d:\dev\one-permit\permit-backend
 
 ```powershell
 $env:POSTGRES_DSN = 'postgres://postgres:yourpass@127.0.0.1:5432/permit?sslmode=disable'
-$env:PERMIT_ALGO_URL = 'http://127.0.0.1:8080'
+$env:PERMIT_ZJZ_BASE_URL = 'https://api.zjzapi.com'
+$env:PERMIT_ZJZ_KEY = 'your_key'
+$env:PERMIT_ZJZ_ACCESS_TOKEN = 'your_access_token'
+$env:PERMIT_ZJZ_WATERMARK = 'false'
 $env:PERMIT_PAY_MOCK = 'true'
 ```
 
@@ -51,7 +57,7 @@ go run .\cmd\permit-backend
 - 仓库选择逻辑：[server.go](file:///d:/dev/one-permit/permit-backend/internal/server/server.go)
 
 ## Docker 一键启动（可选）
-如需一次性启动后端 + PostgreSQL + 算法服务，可使用 docker compose：
+如需一次性启动后端 + PostgreSQL，可使用 docker compose：
 
 ```powershell
 docker compose up -d
@@ -60,7 +66,6 @@ docker compose ps
 
 默认端口：
 - 后端：5000
-- 算法服务：8080
 - PostgreSQL：5432
 
 ## 步骤五：上传与创建任务
@@ -87,7 +92,7 @@ $task
 Invoke-RestMethod -Method Get -Uri ("http://127.0.0.1:5000/api/tasks/" + $task.id)
 ```
 
-提示：算法服务未运行时任务可能为 `failed` 状态，依然会写入数据库，可用于验证持久化。
+提示：未配置 ZJZ 时任务可能为 `failed` 状态，依然会写入数据库，可用于验证持久化。
 
 ## 步骤六：创建订单、支付参数与回调
 

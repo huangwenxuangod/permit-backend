@@ -31,7 +31,6 @@ func main() {
 		UploadsDir: *uploads,
 		JWTSecret:  *jwtSecret,
 		LogJSON:    *logJSON,
-		AlgoURL:    envDefaults.AlgoURL,
 		ZJZBaseURL: envDefaults.ZJZBaseURL,
 		ZJZKey:     envDefaults.ZJZKey,
 		ZJZAccessToken: envDefaults.ZJZAccessToken,

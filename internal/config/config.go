@@ -13,7 +13,6 @@ type Config struct {
 	UploadsDir      string
 	JWTSecret       string
 	LogJSON         bool
-	AlgoURL         string
 	ZJZBaseURL      string
 	ZJZKey          string
 	ZJZAccessToken  string
@@ -35,7 +34,6 @@ func Default() Config {
 		UploadsDir:      "./uploads",
 		JWTSecret:       "",
 		LogJSON:         true,
-		AlgoURL:         "http://127.0.0.1:8080",
 		ZJZBaseURL:      "https://api.zjzapi.com",
 		ZJZKey:          "",
 		ZJZAccessToken:  "",
@@ -81,9 +79,6 @@ func fromEnv(c Config) Config {
 		case "0", "false", "FALSE":
 			c.LogJSON = false
 		}
-	}
-	if v := os.Getenv("PERMIT_ALGO_URL"); v != "" {
-		c.AlgoURL = v
 	}
 	if v := os.Getenv("PERMIT_ZJZ_BASE_URL"); v != "" {
 		c.ZJZBaseURL = v

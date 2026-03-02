@@ -1,10 +1,10 @@
 # Permit Backend
 
-简洁易用的证件照与订单服务后端，采用四层架构（server/usecase/domain/infrastructure），内置算法服务接入与微信支付参数（mock），可在内存与 PostgreSQL 持久化之间切换。
+简洁易用的证件照与订单服务后端，采用四层架构（server/usecase/domain/infrastructure），内置 ZJZ 接入与微信支付参数（mock），可在内存与 PostgreSQL 持久化之间切换。
 
 ## 特性
 - 分层清晰：接口适配层（Gin）、应用用例层、领域模型层、基础设施适配器层
-- 算法集成：上传图片生成证件照（背景色批量处理），兼容 data URL base64
+- ZJZ 集成：上传图片生成证件照（背景色批量处理），兼容 base64
 - 支付集成：返回微信 JSAPI v3 风格参数（mock，便于前端联调）
 - 存储可切换：默认内存；设置 POSTGRES_DSN 即启用 PostgreSQL 持久化
 - 跨端易用：Windows/PowerShell 与 curl 均可快速调用
@@ -13,11 +13,11 @@
 - Go >= 1.25
 - Gin 框架（已在 go.mod 中声明）
 - PostgreSQL（可选）
-- 本地算法服务（默认 http://127.0.0.1:8080，可配置）
+- ZJZ（第三方接口）
 
 ### 环境变量
 - PERMIT_ENV、PERMIT_PORT、PERMIT_ASSETS_DIR、PERMIT_UPLOADS_DIR
-- PERMIT_JWT_SECRET、PERMIT_LOG_JSON、PERMIT_ALGO_URL
+- PERMIT_JWT_SECRET、PERMIT_LOG_JSON、PERMIT_ZJZ_BASE_URL、PERMIT_ZJZ_KEY、PERMIT_ZJZ_ACCESS_TOKEN、PERMIT_ZJZ_WATERMARK
 - PERMIT_PAY_MOCK、PERMIT_WECHAT_APPID、PERMIT_WECHAT_MCHID、PERMIT_WECHAT_NOTIFY_URL
 - POSTGRES_DSN
 
@@ -28,7 +28,10 @@ PERMIT_ENV=dev
 PERMIT_PORT=5000
 PERMIT_ASSETS_DIR=./assets
 PERMIT_UPLOADS_DIR=./uploads
-PERMIT_ALGO_URL=http://127.0.0.1:8080
+PERMIT_ZJZ_BASE_URL=https://api.zjzapi.com
+PERMIT_ZJZ_KEY=your_key
+PERMIT_ZJZ_ACCESS_TOKEN=your_access_token
+PERMIT_ZJZ_WATERMARK=false
 PERMIT_PAY_MOCK=true
 POSTGRES_DSN=postgres://postgres:yourpass@127.0.0.1:5432/permit?sslmode=disable
 ```
@@ -65,7 +68,10 @@ go run ./cmd/permit-backend
 
 ```
 $env:POSTGRES_DSN = 'postgres://postgres:yourpass@127.0.0.1:5432/permit?sslmode=disable'
-$env:PERMIT_ALGO_URL = 'http://127.0.0.1:8080'
+$env:PERMIT_ZJZ_BASE_URL = 'https://api.zjzapi.com'
+$env:PERMIT_ZJZ_KEY = 'your_key'
+$env:PERMIT_ZJZ_ACCESS_TOKEN = 'your_access_token'
+$env:PERMIT_ZJZ_WATERMARK = 'false'
 go run .\cmd\permit-backend
 
 $up = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5000/api/upload -Form @{ file=Get-Item 'D:\path\to\test.jpg' }
@@ -100,7 +106,6 @@ internal/
     repo/memory.go                 # 内存仓库实现
     repo/postgres.go               # Postgres 仓库实现
     asset/writer.go                # 资产写入（FS）
-  algo/client.go                   # 算法客户端
   config/config.go                 # 配置结构与环境变量映射
   env/env.go                       # .env 加载器
 docs/

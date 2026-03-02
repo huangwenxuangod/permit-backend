@@ -36,6 +36,7 @@ type Server struct {
 	downloadSvc *usecase.DownloadService
 	pg       *repo.PostgresRepo
 	zjz      *zjzapi.Client
+	wechatPay *wechat.PayClient
 	itemCache map[string]int
 	itemCacheAt time.Time
 	itemCacheMu sync.Mutex
@@ -94,10 +95,27 @@ func New(cfg config.Config) *Server {
 	s.itemCache = map[string]int{}
 	s.aiPhotoNotifies = map[string]map[string]string{}
 	s.receiptNotifies = map[string]map[string]string{}
+	var payClient *wechat.PayClient
+	if strings.TrimSpace(cfg.WechatAppID) != "" || strings.TrimSpace(cfg.WechatMchID) != "" || strings.TrimSpace(cfg.WechatMchSerial) != "" || strings.TrimSpace(cfg.WechatAPIv3Key) != "" || strings.TrimSpace(cfg.WechatPrivateKey) != "" || strings.TrimSpace(cfg.WechatPlatformCert) != "" {
+		p, err := wechat.NewPayClient(wechat.PayConfig{
+			AppID:        cfg.WechatAppID,
+			MchID:        cfg.WechatMchID,
+			MchSerial:    cfg.WechatMchSerial,
+			PrivateKey:   cfg.WechatPrivateKey,
+			APIv3Key:     cfg.WechatAPIv3Key,
+			PlatformCert: cfg.WechatPlatformCert,
+		})
+		if err == nil {
+			payClient = p
+		}
+	}
+	s.wechatPay = payClient
 	s.orderSvc = &usecase.OrderService{
 		Repo:        orderRepo,
 		PayMock:     cfg.PayMock,
 		WechatAppID: cfg.WechatAppID,
+		WechatNotifyURL: cfg.WechatNotifyURL,
+		WechatPay:   payClient,
 	}
 	s.downloadSvc = &usecase.DownloadService{
 		Repo:  downloadRepo,
@@ -179,6 +197,7 @@ func (s *Server) routesGin() {
 	s.engine.POST("/api/pay/wechat", func(c *gin.Context) { s.handlePayWechat(c.Writer, c.Request) })
 	s.engine.POST("/api/pay/douyin", func(c *gin.Context) { s.handlePayDouyin(c.Writer, c.Request) })
 	s.engine.POST("/api/pay/callback", func(c *gin.Context) { s.handlePayCallback(c.Writer, c.Request) })
+	s.engine.POST("/api/pay/wechat/notify", func(c *gin.Context) { s.handlePayWechatNotify(c.Writer, c.Request) })
 	s.engine.POST("/api/zjz/item/list", func(c *gin.Context) { s.handleZJZItemList(c.Writer, c.Request) })
 	s.engine.POST("/api/zjz/item/get", func(c *gin.Context) { s.handleZJZItemGet(c.Writer, c.Request) })
 	s.engine.POST("/api/zjz/receipt/make", func(c *gin.Context) { s.handleZJZReceiptMake(c.Writer, c.Request) })
@@ -584,6 +603,7 @@ func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
 
 type payReq struct {
 	OrderID string `json:"orderId"`
+	OpenID  string `json:"openid"`
 }
 
 func (s *Server) handlePayWechat(w http.ResponseWriter, r *http.Request) {
@@ -613,11 +633,11 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request, channel strin
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "orderId required")
 		return
 	}
-	if !s.cfg.PayMock {
-		s.err(w, r, http.StatusNotImplemented, "NotImplemented", "real payment not configured")
-		return
+	openID := strings.TrimSpace(req.OpenID)
+	if openID == "" {
+		openID = s.resolveOpenID(r)
 	}
-	p, err := s.orderSvc.Pay(req.OrderID, channel, idempotencyKey)
+	p, err := s.orderSvc.Pay(req.OrderID, channel, idempotencyKey, openID)
 	if err != nil {
 		switch err.(type) {
 		case usecase.ErrNotFound:
@@ -672,6 +692,82 @@ func (s *Server) handlePayCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, r, http.StatusOK, map[string]any{"ok": true})
+}
+
+type wechatNotifyReq struct {
+	EventType string             `json:"event_type"`
+	Resource  wechat.NotifyResource `json:"resource"`
+}
+
+type wechatNotifyPlain struct {
+	OutTradeNo string `json:"out_trade_no"`
+	TradeState string `json:"trade_state"`
+}
+
+func (s *Server) handlePayWechatNotify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
+		return
+	}
+	if s.wechatPay == nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "wechat pay not configured")
+		return
+	}
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid body")
+		return
+	}
+	body := string(raw)
+	timestamp := r.Header.Get("Wechatpay-Timestamp")
+	nonce := r.Header.Get("Wechatpay-Nonce")
+	signature := r.Header.Get("Wechatpay-Signature")
+	serial := r.Header.Get("Wechatpay-Serial")
+	if err := s.wechatPay.VerifySignature(timestamp, nonce, body, signature, serial); err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": "FAIL", "message": "invalid signature"})
+		return
+	}
+	var req wechatNotifyReq
+	if err := json.Unmarshal(raw, &req); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid json")
+		return
+	}
+	plain, err := s.wechatPay.DecryptResource(req.Resource)
+	if err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "decrypt failed")
+		return
+	}
+	var pay wechatNotifyPlain
+	if err := json.Unmarshal(plain, &pay); err != nil {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "invalid resource")
+		return
+	}
+	if strings.TrimSpace(pay.OutTradeNo) == "" {
+		s.err(w, r, http.StatusBadRequest, "BadRequest", "out_trade_no required")
+		return
+	}
+	status := "pending"
+	switch strings.ToUpper(pay.TradeState) {
+	case "SUCCESS":
+		status = "paid"
+	case "REFUND":
+		status = "refunded"
+	case "CLOSED", "REVOKED":
+		status = "canceled"
+	case "USERPAYING", "NOTPAY", "PAYERROR":
+		status = "pending"
+	}
+	if err := s.orderSvc.Callback(pay.OutTradeNo, status); err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": "FAIL", "message": "callback failed"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": "SUCCESS", "message": "OK"})
 }
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1343,6 +1439,17 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request, status int, v any)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+func (s *Server) resolveOpenID(r *http.Request) string {
+	authz := r.Header.Get("Authorization")
+	if strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+		tk := strings.TrimSpace(authz[7:])
+		if uid, _, err := s.authSvc.Verify(tk); err == nil && strings.TrimSpace(uid) != "" {
+			return uid
+		}
+	}
+	return ""
+}
+
 func (s *Server) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method == http.MethodOptions {
@@ -1350,7 +1457,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			return
 		}
 		p := c.Request.URL.Path
-		if strings.HasPrefix(p, "/assets") || p == "/api/login" || strings.HasPrefix(p, "/api/download/file") || p == "/api/zjz/receipt/notify" || p == "/api/zjz/ai-photo/notify" {
+		if strings.HasPrefix(p, "/assets") || p == "/api/login" || strings.HasPrefix(p, "/api/download/file") || p == "/api/zjz/receipt/notify" || p == "/api/zjz/ai-photo/notify" || p == "/api/pay/wechat/notify" {
 			c.Next()
 			return
 		}

@@ -22,6 +22,10 @@ type Config struct {
 	WechatSecret    string
 	WechatMchID     string
 	WechatNotifyURL string
+	WechatMchSerial string
+	WechatAPIv3Key  string
+	WechatPrivateKey string
+	WechatPlatformCert string
 	PostgresDSN     string
 }
 
@@ -43,6 +47,10 @@ func Default() Config {
 		WechatSecret:    "",
 		WechatMchID:     "",
 		WechatNotifyURL: "",
+		WechatMchSerial: "",
+		WechatAPIv3Key:  "",
+		WechatPrivateKey: "",
+		WechatPlatformCert: "",
 		PostgresDSN:     "",
 	}
 }
@@ -116,6 +124,18 @@ func fromEnv(c Config) Config {
 	}
 	if v := os.Getenv("PERMIT_WECHAT_NOTIFY_URL"); v != "" {
 		c.WechatNotifyURL = v
+	}
+	if v := os.Getenv("PERMIT_WECHAT_MCH_SERIAL"); v != "" {
+		c.WechatMchSerial = v
+	}
+	if v := os.Getenv("PERMIT_WECHAT_API_V3_KEY"); v != "" {
+		c.WechatAPIv3Key = v
+	}
+	if v := os.Getenv("PERMIT_WECHAT_PRIVATE_KEY"); v != "" {
+		c.WechatPrivateKey = v
+	}
+	if v := os.Getenv("PERMIT_WECHAT_PLATFORM_CERT"); v != "" {
+		c.WechatPlatformCert = v
 	}
 	if v := os.Getenv("POSTGRES_DSN"); v != "" {
 		c.PostgresDSN = v

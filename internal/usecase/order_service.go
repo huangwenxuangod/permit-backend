@@ -1,9 +1,11 @@
 package usecase
 
 import (
+	"context"
 	"encoding/json"
 	"permit-backend/internal/domain"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -13,10 +15,16 @@ type OrderRepo interface {
 	List(page, pageSize int) ([]domain.Order, int)
 }
 
+type WechatPayClient interface {
+	JSAPIPrepay(ctx context.Context, orderID string, amount int, description string, openID string, notifyURL string) (map[string]any, error)
+}
+
 type OrderService struct {
-	Repo        OrderRepo
-	PayMock     bool
-	WechatAppID string
+	Repo             OrderRepo
+	PayMock          bool
+	WechatAppID      string
+	WechatNotifyURL  string
+	WechatPay        WechatPayClient
 }
 
 func (s *OrderService) Create(req *domain.Order) (string, error) {
@@ -32,7 +40,7 @@ func (s *OrderService) Create(req *domain.Order) (string, error) {
 	return id, nil
 }
 
-func (s *OrderService) Pay(orderID, channel, idempotencyKey string) (map[string]any, error) {
+func (s *OrderService) Pay(orderID, channel, idempotencyKey, openID string) (map[string]any, error) {
 	o, ok := s.Repo.Get(orderID)
 	if !ok {
 		return nil, ErrNotFound("order")
@@ -53,6 +61,28 @@ func (s *OrderService) Pay(orderID, channel, idempotencyKey string) (map[string]
 	o.Status = domain.OrderPending
 	o.PayIdempotencyKey = idempotencyKey
 	o.UpdatedAt = time.Now().UTC()
+	if !s.PayMock {
+		if channel != "wechat" {
+			return nil, ErrBadRequest("only wechat supported")
+		}
+		if strings.TrimSpace(openID) == "" {
+			return nil, ErrBadRequest("openid required")
+		}
+		if strings.TrimSpace(s.WechatNotifyURL) == "" {
+			return nil, ErrBadRequest("wechat notify url required")
+		}
+		if s.WechatPay == nil {
+			return nil, ErrBadRequest("wechat pay not configured")
+		}
+		p, err := s.WechatPay.JSAPIPrepay(context.Background(), o.OrderID, o.AmountCents, o.Remark, openID, s.WechatNotifyURL)
+		if err != nil {
+			return nil, err
+		}
+		raw, _ := json.Marshal(p)
+		o.PayParams = string(raw)
+		_ = s.Repo.Put(o)
+		return p, nil
+	}
 	prepayID := "mock-" + randomID()
 	p := map[string]any{
 		"appId":     s.WechatAppID,

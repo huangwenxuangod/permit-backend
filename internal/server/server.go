@@ -326,6 +326,7 @@ type Spec struct {
 	WidthPx  int      `json:"widthPx"`
 	HeightPx int      `json:"heightPx"`
 	DPI      int      `json:"dpi"`
+	ItemID   int      `json:"itemId"`
 	BgColors []string `json:"bgColors"`
 }
 
@@ -356,6 +357,13 @@ func (s *Server) handleSpecs(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(items) == 0 {
 		items = s.defaultSpecs()
+	}
+	for i := range items {
+		if items[i].ItemID == 0 {
+			if id, err := s.resolveItemID(items[i].Name); err == nil {
+				items[i].ItemID = id
+			}
+		}
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {

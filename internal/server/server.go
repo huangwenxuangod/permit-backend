@@ -853,6 +853,31 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 			s.err(w, r, http.StatusBadRequest, "BadRequest", "itemId is receipt, idcard item required")
 			return
 		}
+		item, err = s.zjz.ItemGet(r.Context(), itemID)
+	}
+	if err == nil {
+		allowed := parseItemColors(item.Data.Color)
+		if len(allowed) > 0 {
+			if len(req.AvailableColors) == 0 {
+				req.AvailableColors = allowed
+			} else {
+				allowedSet := map[string]struct{}{}
+				for _, c := range allowed {
+					allowedSet[strings.ToLower(strings.TrimSpace(c))] = struct{}{}
+				}
+				filtered := make([]string, 0, len(req.AvailableColors))
+				for _, c := range req.AvailableColors {
+					if _, ok := allowedSet[strings.ToLower(strings.TrimSpace(c))]; ok {
+						filtered = append(filtered, c)
+					}
+				}
+				if len(filtered) == 0 {
+					req.AvailableColors = allowed
+				} else {
+					req.AvailableColors = filtered
+				}
+			}
+		}
 	}
 	t, _ := s.taskSvc.CreateTask(userID, orDefault(req.SpecCode, "passport"), req.SourceObjectKey, itemID, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, req.Beauty, req.Enhance, req.Watermark)
 	s.json(w, r, http.StatusOK, t)
@@ -1808,6 +1833,30 @@ func (s *Server) resolveIDCardItemID(name string) (int, error) {
 		}
 	}
 	return bestID, nil
+}
+
+func parseItemColors(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	replacer := strings.NewReplacer("|", ",", "，", ",", " ", ",")
+	parts := strings.Split(replacer.Replace(raw), ",")
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		v := strings.TrimSpace(p)
+		if v == "" {
+			continue
+		}
+		key := strings.ToLower(v)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 type pgOrderRepo struct{ pg *repo.PostgresRepo }

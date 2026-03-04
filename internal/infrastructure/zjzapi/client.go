@@ -24,6 +24,30 @@ type IDCardData struct {
 	List  map[string]string `json:"list"`
 }
 
+func (d *IDCardData) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		var items []IDCardData
+		if err := json.Unmarshal(data, &items); err != nil {
+			return err
+		}
+		if len(items) > 0 {
+			*d = items[0]
+		}
+		return nil
+	}
+	type alias IDCardData
+	var out alias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*d = IDCardData(out)
+	return nil
+}
+
 type IDCardResp struct {
 	Code int        `json:"code"`
 	Msg  string     `json:"msg"`

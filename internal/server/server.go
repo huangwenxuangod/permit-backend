@@ -1840,7 +1840,29 @@ func parseItemColors(raw string) []string {
 	if raw == "" {
 		return nil
 	}
-	replacer := strings.NewReplacer("|", ",", "，", ",", " ", ",")
+	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
+		var arr []string
+		if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+			out := make([]string, 0, len(arr))
+			seen := map[string]struct{}{}
+			for _, v := range arr {
+				v = strings.TrimSpace(strings.Trim(v, `"'`))
+				if v == "" {
+					continue
+				}
+				key := strings.ToLower(v)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				out = append(out, v)
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	replacer := strings.NewReplacer("|", ",", "，", ",", " ", ",", "[", "", "]", "", `"`, "", `'`, "")
 	parts := strings.Split(replacer.Replace(raw), ",")
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(parts))

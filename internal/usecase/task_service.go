@@ -10,7 +10,9 @@ import (
 	"image/color"
 	"image/draw"
 	"image/jpeg"
+	_ "image/png"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -176,7 +178,14 @@ func (s *TaskService) CreateReceiptTask(userID, specCode, sourceObjectKey string
 		_ = s.Repo.Put(t)
 		return t, nil
 	}
-	imageB64 := base64.StdEncoding.EncodeToString(raw)
+	imageB64, err := normalizeIDCardImage(raw)
+	if err != nil {
+		t.Status = domain.StatusFailed
+		t.ErrorMsg = err.Error()
+		t.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.Put(t)
+		return t, nil
+	}
 	resp, err := s.ZJZ.ReceiptMake(context.Background(), itemID, imageB64)
 	if err != nil {
 		t.Status = domain.StatusFailed
@@ -384,6 +393,55 @@ func (s *TaskService) callIDCard(ctx context.Context, itemID int, imageBase64 st
 		return s.ZJZ.IDCardMake(ctx, itemID, imageBase64, colors, enhance, beauty)
 	}
 	return s.ZJZ.IDCardAll(ctx, itemID, imageBase64, colors, enhance, beauty)
+}
+
+func normalizeIDCardImage(raw []byte) (string, error) {
+	im, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return "", ErrBadRequest("invalid image")
+	}
+	bounds := im.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	maxDim := 6000
+	if w > maxDim || h > maxDim {
+		scale := math.Min(float64(maxDim)/float64(w), float64(maxDim)/float64(h))
+		nw := int(math.Round(float64(w) * scale))
+		nh := int(math.Round(float64(h) * scale))
+		if nw < 1 {
+			nw = 1
+		}
+		if nh < 1 {
+			nh = 1
+		}
+		dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+		for y := 0; y < nh; y++ {
+			sy := bounds.Min.Y + y*w/nh
+			for x := 0; x < nw; x++ {
+				sx := bounds.Min.X + x*w/nw
+				dst.Set(x, y, im.At(sx, sy))
+			}
+		}
+		im = dst
+	}
+	if len(raw) <= 5<<20 && w <= maxDim && h <= maxDim {
+		return base64.StdEncoding.EncodeToString(raw), nil
+	}
+	quality := 85
+	var out bytes.Buffer
+	for {
+		out.Reset()
+		if err := jpeg.Encode(&out, im, &jpeg.Options{Quality: quality}); err != nil {
+			return "", err
+		}
+		if out.Len() <= 5<<20 || quality <= 40 {
+			break
+		}
+		quality -= 15
+	}
+	if out.Len() > 5<<20 {
+		return "", ErrBadRequest("image too large, please upload <=5MB")
+	}
+	return base64.StdEncoding.EncodeToString(out.Bytes()), nil
 }
 
 func (s *TaskService) downloadImage(u string) ([]byte, error) {

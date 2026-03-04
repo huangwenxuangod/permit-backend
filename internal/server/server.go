@@ -265,6 +265,8 @@ type createTaskReq struct {
 	Beauty            int      `json:"beauty"`
 	Enhance           int      `json:"enhance"`
 	Watermark         bool     `json:"watermark"`
+	ReceiptNoticeURL  string   `json:"receiptNoticeUrl"`
+	ReceiptParam      string   `json:"receiptParam"`
 }
 
 type generateBackgroundReq struct {
@@ -832,6 +834,20 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if itemID == 0 {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "itemId required")
+		return
+	}
+	item, err := s.zjz.ItemGet(r.Context(), itemID)
+	if err == nil && strings.TrimSpace(item.Data.IsReceipt) == "1" {
+		if strings.TrimSpace(req.ReceiptNoticeURL) == "" {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", "receiptNoticeUrl required")
+			return
+		}
+		if strings.TrimSpace(item.Data.ReceiptParam) != "" && strings.TrimSpace(req.ReceiptParam) == "" {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", "receiptParam required")
+			return
+		}
+		t, _ := s.taskSvc.CreateReceiptTask(userID, orDefault(req.SpecCode, "passport"), req.SourceObjectKey, itemID, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, req.ReceiptNoticeURL, req.ReceiptParam)
+		s.json(w, r, http.StatusOK, t)
 		return
 	}
 	t, _ := s.taskSvc.CreateTask(userID, orDefault(req.SpecCode, "passport"), req.SourceObjectKey, itemID, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, req.Beauty, req.Enhance, req.Watermark)

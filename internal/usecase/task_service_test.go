@@ -51,6 +51,14 @@ func (t testZJZ) IDCardAll(ctx context.Context, itemID int, imageBase64 string, 
 	return t.reply(colors), nil
 }
 
+func (t testZJZ) ReceiptMake(ctx context.Context, itemID int, imageBase64 string) (zjzapi.ReceiptResp, error) {
+	return zjzapi.ReceiptResp{Code: 0, Msg: "ok", Data: t.reply(nil).Data}, nil
+}
+
+func (t testZJZ) ReceiptSubmit(ctx context.Context, picID, noticeURL, param string) (map[string]any, error) {
+	return map[string]any{"ok": true}, nil
+}
+
 func (t testZJZ) reply(colors []string) zjzapi.IDCardResp {
 	if len(colors) == 0 {
 		colors = []string{"white", "blue"}

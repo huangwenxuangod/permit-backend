@@ -41,6 +41,8 @@ type AssetWriter interface {
 type ZJZClient interface {
 	IDCardMake(ctx context.Context, itemID int, imageBase64 string, colors []string, enhance, beauty int) (zjzapi.IDCardResp, error)
 	IDCardAll(ctx context.Context, itemID int, imageBase64 string, colors []string, enhance, beauty int) (zjzapi.IDCardResp, error)
+	ReceiptMake(ctx context.Context, itemID int, imageBase64 string) (zjzapi.ReceiptResp, error)
+	ReceiptSubmit(ctx context.Context, picID, noticeURL, param string) (map[string]any, error)
 }
 
 type TaskService struct {
@@ -130,6 +132,99 @@ func (s *TaskService) CreateTask(userID, specCode, sourceObjectKey string, itemI
 	if len(t.ProcessedUrls) == 0 {
 		t.Status = domain.StatusFailed
 		t.ErrorMsg = "zjz idcard download empty"
+		t.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.Put(t)
+		return t, nil
+	}
+	bgColor := strings.TrimSpace(defaultBackground)
+	if bgColor == "" && len(colors) > 0 {
+		bgColor = colors[0]
+	}
+	if u, ok := t.ProcessedUrls[bgColor]; ok {
+		t.BaselineUrl = u
+	}
+	t.Status = domain.StatusDone
+	t.UpdatedAt = time.Now().UTC()
+	_ = s.Repo.Put(t)
+	return t, nil
+}
+
+func (s *TaskService) CreateReceiptTask(userID, specCode, sourceObjectKey string, itemID int, defaultBackground string, width, height, dpi int, availableColors []string, receiptNoticeURL, receiptParam string) (*domain.Task, error) {
+	taskID := randomID()
+	now := time.Now().UTC()
+	t := &domain.Task{
+		ID:              taskID,
+		UserID:          userID,
+		SpecCode:        specCode,
+		Spec:            domain.TaskSpec{Code: specCode, WidthPx: width, HeightPx: height, DPI: dpi},
+		ItemID:          itemID,
+		SourceObjectKey: sourceObjectKey,
+		Status:          domain.StatusProcessing,
+		ProcessedUrls:   map[string]string{},
+		LayoutUrls:      map[string]string{},
+		AvailableColors: availableColors,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	_ = s.Repo.Put(t)
+	srcPath := s.objectKeyToPath(sourceObjectKey)
+	raw, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Status = domain.StatusFailed
+		t.ErrorMsg = "read source error"
+		t.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.Put(t)
+		return t, nil
+	}
+	imageB64 := base64.StdEncoding.EncodeToString(raw)
+	resp, err := s.ZJZ.ReceiptMake(context.Background(), itemID, imageB64)
+	if err != nil {
+		t.Status = domain.StatusFailed
+		t.ErrorMsg = "zjz receipt error: " + err.Error()
+		t.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.Put(t)
+		return t, nil
+	}
+	if strings.TrimSpace(receiptNoticeURL) != "" {
+		if _, err := s.ZJZ.ReceiptSubmit(context.Background(), resp.Data.PicID, receiptNoticeURL, receiptParam); err != nil {
+			t.Status = domain.StatusFailed
+			t.ErrorMsg = "zjz receipt submit error: " + err.Error()
+			t.UpdatedAt = time.Now().UTC()
+			_ = s.Repo.Put(t)
+			return t, nil
+		}
+	}
+	list := resp.Data.List
+	if len(list) == 0 {
+		t.Status = domain.StatusFailed
+		t.ErrorMsg = "zjz receipt empty list"
+		t.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.Put(t)
+		return t, nil
+	}
+	colors := availableColors
+	if len(colors) == 0 {
+		colors = keysSorted(list)
+		t.AvailableColors = colors
+	}
+	for _, c := range colors {
+		u, ok := list[c]
+		if !ok {
+			continue
+		}
+		data, err := s.downloadImage(u)
+		if err != nil {
+			continue
+		}
+		url, err := s.Assets.Write(taskID, c, data)
+		if err != nil {
+			continue
+		}
+		t.ProcessedUrls[c] = url
+	}
+	if len(t.ProcessedUrls) == 0 {
+		t.Status = domain.StatusFailed
+		t.ErrorMsg = "zjz receipt download empty"
 		t.UpdatedAt = time.Now().UTC()
 		_ = s.Repo.Put(t)
 		return t, nil

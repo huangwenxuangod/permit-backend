@@ -107,6 +107,8 @@ type Item struct {
 	HeightMM  string `json:"height_mm"`
 	DPI       string `json:"dpi"`
 	FileSize  string `json:"file_size_msg"`
+	IsReceipt string `json:"is_receipt"`
+	ReceiptParam string `json:"receipt_param"`
 }
 
 type UserInfoResp struct {

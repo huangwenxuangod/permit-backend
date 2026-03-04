@@ -360,8 +360,16 @@ func (s *Server) handleSpecs(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range items {
 		if items[i].ItemID == 0 {
-			if id, err := s.resolveItemID(items[i].Name); err == nil {
-				items[i].ItemID = id
+			preferred := s.preferredZJZName(items[i].Code, items[i].Name)
+			if preferred != "" {
+				if id, err := s.resolveItemID(preferred); err == nil {
+					items[i].ItemID = id
+				}
+			}
+			if items[i].ItemID == 0 {
+				if id, err := s.resolveItemID(items[i].Name); err == nil {
+					items[i].ItemID = id
+				}
 			}
 		}
 	}
@@ -1504,14 +1512,42 @@ func (s *Server) objectKeyToPath(objectKey string) string {
 	return filepath.Join(s.cfg.UploadsDir, objectKey)
 }
 
+func (s *Server) preferredZJZName(code, name string) string {
+	switch strings.TrimSpace(code) {
+	case "hkmo_pass":
+		return "港澳通行证"
+	case "id_card":
+		return "身份证"
+	case "passport":
+		return "护照"
+	case "social_security":
+		return "社保证（300dpi， 无回执）"
+	case "driver_license":
+		return "驾驶证、驾照（无回执、小一寸）"
+	case "security_guard":
+		return "保安证"
+	default:
+		return strings.TrimSpace(name)
+	}
+}
+
 func (s *Server) resolveItemID(name string) (int, error) {
 	n := strings.TrimSpace(name)
 	if n == "" {
 		return 0, usecase.ErrBadRequest("spec name required")
 	}
+	replacer := strings.NewReplacer(" ", "", "（", "", "）", "", "(", "", ")", "", "-", "", "—", "", "·", "", ",", "", "，", "")
+	normalize := func(v string) string {
+		return replacer.Replace(strings.ToLower(strings.TrimSpace(v)))
+	}
+	norm := normalize(n)
 	s.itemCacheMu.Lock()
 	if time.Since(s.itemCacheAt) < 10*time.Minute && len(s.itemCache) > 0 {
 		if id, ok := s.itemCache[n]; ok {
+			s.itemCacheMu.Unlock()
+			return id, nil
+		}
+		if id, ok := s.itemCache[norm]; ok {
 			s.itemCacheMu.Unlock()
 			return id, nil
 		}
@@ -1522,17 +1558,75 @@ func (s *Server) resolveItemID(name string) (int, error) {
 		return 0, err
 	}
 	cache := map[string]int{}
+	alias := map[string][]string{
+		"港澳通行证": {"港澳通行证"},
+		"身份证":   {"身份证", "居民身份证"},
+		"护照":    {"护照"},
+		"社保卡":   {"社保证"},
+		"驾驶证":   {"驾驶证", "驾照"},
+		"保安证":   {"保安证"},
+	}
 	for _, it := range resp.Data.List {
 		id, err := strconv.Atoi(strings.TrimSpace(it.ItemID))
 		if err != nil {
 			continue
 		}
 		cache[it.Name] = id
+		cache[normalize(it.Name)] = id
+	}
+	id := cache[n]
+	if id == 0 {
+		id = cache[norm]
+	}
+	if id == 0 {
+		keywords := []string{n}
+		if alt, ok := alias[n]; ok && len(alt) > 0 {
+			keywords = alt
+		}
+		bestID := 0
+		bestScore := -1
+		for _, it := range resp.Data.List {
+			itemID, err := strconv.Atoi(strings.TrimSpace(it.ItemID))
+			if err != nil {
+				continue
+			}
+			nameLower := strings.ToLower(it.Name)
+			score := 0
+			for _, kw := range keywords {
+				if strings.TrimSpace(kw) != "" && strings.Contains(nameLower, strings.ToLower(kw)) {
+					score = 1
+					break
+				}
+			}
+			if score == 0 {
+				continue
+			}
+			if strings.Contains(nameLower, "无回执") {
+				score += 2
+			}
+			if strings.Contains(nameLower, "300") && strings.Contains(nameLower, "dpi") {
+				score += 1
+			}
+			if score > bestScore {
+				bestScore = score
+				bestID = itemID
+			}
+		}
+		id = bestID
+		if id != 0 {
+			cache[n] = id
+			cache[norm] = id
+		}
 	}
 	s.itemCacheMu.Lock()
 	s.itemCache = cache
 	s.itemCacheAt = time.Now()
-	id := s.itemCache[n]
+	if id == 0 {
+		id = s.itemCache[n]
+	}
+	if id == 0 {
+		id = s.itemCache[norm]
+	}
 	s.itemCacheMu.Unlock()
 	return id, nil
 }

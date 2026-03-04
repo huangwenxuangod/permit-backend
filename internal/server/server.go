@@ -709,6 +709,9 @@ func (s *Server) handlePayCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if strings.ToLower(req.Status) == "paid" {
+		s.generateReceiptForOrder(req.OrderID)
+	}
 	s.json(w, r, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -783,6 +786,9 @@ func (s *Server) handlePayWechatNotify(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"code": "FAIL", "message": "callback failed"})
 		return
 	}
+	if status == "paid" {
+		go s.generateReceiptForOrder(pay.OutTradeNo)
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"code": "SUCCESS", "message": "OK"})
@@ -827,8 +833,9 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	itemID := req.ItemID
+	preferredName := s.preferredZJZName(spec.Code, spec.Name)
 	if itemID == 0 {
-		if id, err := s.resolveItemID(spec.Name); err == nil {
+		if id, err := s.resolveItemID(preferredName); err == nil {
 			itemID = id
 		}
 	}
@@ -838,17 +845,9 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.zjz.ItemGet(r.Context(), itemID)
 	if err == nil && strings.TrimSpace(item.Data.IsReceipt) == "1" {
-		if strings.TrimSpace(req.ReceiptNoticeURL) == "" {
-			s.err(w, r, http.StatusBadRequest, "BadRequest", "receiptNoticeUrl required")
-			return
+		if id, err := s.resolveItemID(preferredName); err == nil && id != 0 {
+			itemID = id
 		}
-		if strings.TrimSpace(item.Data.ReceiptParam) != "" && strings.TrimSpace(req.ReceiptParam) == "" {
-			s.err(w, r, http.StatusBadRequest, "BadRequest", "receiptParam required")
-			return
-		}
-		t, _ := s.taskSvc.CreateReceiptTask(userID, orDefault(req.SpecCode, "passport"), req.SourceObjectKey, itemID, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, req.ReceiptNoticeURL, req.ReceiptParam)
-		s.json(w, r, http.StatusOK, t)
-		return
 	}
 	t, _ := s.taskSvc.CreateTask(userID, orDefault(req.SpecCode, "passport"), req.SourceObjectKey, itemID, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, req.Beauty, req.Enhance, req.Watermark)
 	s.json(w, r, http.StatusOK, t)
@@ -1268,10 +1267,18 @@ func (s *Server) handleDownloadInfo(w http.ResponseWriter, r *http.Request) {
 		s.err(w, r, http.StatusBadRequest, "BadRequest", "task not ready")
 		return
 	}
+	receiptUrls := map[string]string{}
+	for k, v := range t.LayoutUrls {
+		if strings.HasPrefix(strings.ToLower(k), "receipt_") {
+			receiptUrls[strings.TrimPrefix(strings.ToLower(k), "receipt_")] = v
+		}
+	}
 	s.json(w, r, http.StatusOK, map[string]any{
-		"taskId":    id,
-		"urls":      t.ProcessedUrls,
-		"expiresIn": 600,
+		"taskId":      id,
+		"urls":        t.ProcessedUrls,
+		"layoutUrls":  t.LayoutUrls,
+		"receiptUrls": receiptUrls,
+		"expiresIn":   600,
 	})
 }
 
@@ -1482,6 +1489,32 @@ func (s *Server) resolveOpenID(r *http.Request) string {
 	return ""
 }
 
+func (s *Server) generateReceiptForOrder(orderID string) {
+	o, ok := s.orderSvc.Repo.Get(orderID)
+	if !ok || o == nil {
+		return
+	}
+	if strings.TrimSpace(o.TaskID) == "" {
+		return
+	}
+	t, ok := s.taskSvc.Repo.Get(o.TaskID)
+	if !ok || t == nil || t.Status != domain.StatusDone {
+		return
+	}
+	for k := range t.LayoutUrls {
+		if strings.HasPrefix(strings.ToLower(k), "receipt_") {
+			return
+		}
+	}
+	spec := s.findSpec(orDefault(t.SpecCode, "passport"))
+	preferred := s.preferredZJZName(spec.Code, spec.Name)
+	receiptItemID, err := s.resolveReceiptItemID(preferred)
+	if err != nil || receiptItemID == 0 {
+		return
+	}
+	_, _ = s.taskSvc.GenerateReceipt(t.ID, receiptItemID)
+}
+
 func (s *Server) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method == http.MethodOptions {
@@ -1645,6 +1678,67 @@ func (s *Server) resolveItemID(name string) (int, error) {
 	}
 	s.itemCacheMu.Unlock()
 	return id, nil
+}
+
+func (s *Server) resolveReceiptItemID(name string) (int, error) {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return 0, usecase.ErrBadRequest("spec name required")
+	}
+	replacer := strings.NewReplacer(" ", "", "（", "", "）", "", "(", "", ")", "", "-", "", "—", "", "·", "", ",", "", "，", "")
+	normalize := func(v string) string {
+		return replacer.Replace(strings.ToLower(strings.TrimSpace(v)))
+	}
+	norm := normalize(n)
+	resp, err := s.zjz.ItemList(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	alias := map[string][]string{
+		"港澳通行证": {"港澳通行证"},
+		"身份证":   {"身份证", "居民身份证"},
+		"护照":    {"护照"},
+		"社保卡":   {"社保证"},
+		"驾驶证":   {"驾驶证", "驾照"},
+		"保安证":   {"保安证"},
+	}
+	keywords := []string{n}
+	if alt, ok := alias[n]; ok && len(alt) > 0 {
+		keywords = alt
+	}
+	bestID := 0
+	bestScore := -1
+	for _, it := range resp.Data.List {
+		if strings.TrimSpace(it.IsReceipt) != "1" {
+			continue
+		}
+		itemID, err := strconv.Atoi(strings.TrimSpace(it.ItemID))
+		if err != nil {
+			continue
+		}
+		nameLower := strings.ToLower(it.Name)
+		score := 0
+		if normalize(it.Name) == norm {
+			score += 3
+		}
+		for _, kw := range keywords {
+			if strings.TrimSpace(kw) != "" && strings.Contains(nameLower, strings.ToLower(kw)) {
+				score += 2
+				break
+			}
+		}
+		if strings.Contains(nameLower, "回执") {
+			score += 2
+		}
+		if strings.Contains(nameLower, "无回执") {
+			score -= 2
+		}
+		if score > bestScore {
+			bestScore = score
+			bestID = itemID
+		}
+	}
+	return bestID, nil
 }
 
 type pgOrderRepo struct{ pg *repo.PostgresRepo }

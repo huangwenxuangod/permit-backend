@@ -288,6 +288,50 @@ func (s *TaskService) GenerateBackground(taskID string, colorName string, dpi in
 	return url, nil
 }
 
+func (s *TaskService) GenerateReceipt(taskID string, receiptItemID int) (map[string]string, error) {
+	t, ok := s.Repo.Get(taskID)
+	if !ok {
+		return nil, ErrNotFound("task")
+	}
+	srcPath := s.objectKeyToPath(t.SourceObjectKey)
+	raw, err := os.ReadFile(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	imageB64 := base64.StdEncoding.EncodeToString(raw)
+	resp, err := s.ZJZ.ReceiptMake(context.Background(), receiptItemID, imageB64)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Data.List) == 0 {
+		return nil, ErrNotFound("zjz_receipt")
+	}
+	if t.LayoutUrls == nil {
+		t.LayoutUrls = map[string]string{}
+	}
+	out := map[string]string{}
+	for c, u := range resp.Data.List {
+		data, err := s.downloadImage(u)
+		if err != nil {
+			continue
+		}
+		filename := "receipt_" + strings.ToLower(c) + ".jpg"
+		url, err := s.Assets.WriteFile(taskID, filename, data)
+		if err != nil {
+			continue
+		}
+		key := "receipt_" + c
+		t.LayoutUrls[key] = url
+		out[c] = url
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound("receipt")
+	}
+	t.UpdatedAt = time.Now().UTC()
+	_ = s.Repo.Put(t)
+	return out, nil
+}
+
 func (s *TaskService) GenerateLayout(taskID string, colorName string, width, height, dpi, kb int) (string, error) {
 	t, ok := s.Repo.Get(taskID)
 	if !ok {

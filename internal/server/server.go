@@ -835,7 +835,9 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	itemID := req.ItemID
 	preferredName := s.preferredZJZName(spec.Code, spec.Name)
 	if itemID == 0 {
-		if id, err := s.resolveItemID(preferredName); err == nil {
+		if id, err := s.resolveIDCardItemID(preferredName); err == nil && id != 0 {
+			itemID = id
+		} else if id, err := s.resolveItemID(preferredName); err == nil {
 			itemID = id
 		}
 	}
@@ -845,8 +847,11 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.zjz.ItemGet(r.Context(), itemID)
 	if err == nil && strings.TrimSpace(item.Data.IsReceipt) == "1" {
-		if id, err := s.resolveItemID(preferredName); err == nil && id != 0 {
+		if id, err := s.resolveIDCardItemID(preferredName); err == nil && id != 0 {
 			itemID = id
+		} else {
+			s.err(w, r, http.StatusBadRequest, "BadRequest", "itemId is receipt, idcard item required")
+			return
 		}
 	}
 	t, _ := s.taskSvc.CreateTask(userID, orDefault(req.SpecCode, "passport"), req.SourceObjectKey, itemID, req.DefaultBackground, req.WidthPx, req.HeightPx, req.DPI, req.AvailableColors, req.Beauty, req.Enhance, req.Watermark)
@@ -1732,6 +1737,70 @@ func (s *Server) resolveReceiptItemID(name string) (int, error) {
 		}
 		if strings.Contains(nameLower, "无回执") {
 			score -= 2
+		}
+		if score > bestScore {
+			bestScore = score
+			bestID = itemID
+		}
+	}
+	return bestID, nil
+}
+
+func (s *Server) resolveIDCardItemID(name string) (int, error) {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return 0, usecase.ErrBadRequest("spec name required")
+	}
+	replacer := strings.NewReplacer(" ", "", "（", "", "）", "", "(", "", ")", "", "-", "", "—", "", "·", "", ",", "", "，", "")
+	normalize := func(v string) string {
+		return replacer.Replace(strings.ToLower(strings.TrimSpace(v)))
+	}
+	norm := normalize(n)
+	resp, err := s.zjz.ItemList(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	alias := map[string][]string{
+		"港澳通行证": {"港澳通行证"},
+		"身份证":   {"身份证", "居民身份证"},
+		"护照":    {"护照"},
+		"社保卡":   {"社保证"},
+		"驾驶证":   {"驾驶证", "驾照"},
+		"保安证":   {"保安证"},
+	}
+	keywords := []string{n}
+	if alt, ok := alias[n]; ok && len(alt) > 0 {
+		keywords = alt
+	}
+	bestID := 0
+	bestScore := -1
+	for _, it := range resp.Data.List {
+		if strings.TrimSpace(it.IsReceipt) == "1" {
+			continue
+		}
+		itemID, err := strconv.Atoi(strings.TrimSpace(it.ItemID))
+		if err != nil {
+			continue
+		}
+		nameLower := strings.ToLower(it.Name)
+		score := 0
+		if normalize(it.Name) == norm {
+			score += 3
+		}
+		for _, kw := range keywords {
+			if strings.TrimSpace(kw) != "" && strings.Contains(nameLower, strings.ToLower(kw)) {
+				score += 2
+				break
+			}
+		}
+		if strings.Contains(nameLower, "无回执") {
+			score += 2
+		}
+		if strings.Contains(nameLower, "回执") {
+			score -= 2
+		}
+		if strings.Contains(nameLower, "300") && strings.Contains(nameLower, "dpi") {
+			score += 1
 		}
 		if score > bestScore {
 			bestScore = score

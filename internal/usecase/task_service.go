@@ -100,6 +100,14 @@ func (s *TaskService) CreateTask(userID, specCode, sourceObjectKey string, itemI
 		_ = s.Repo.Put(t)
 		return t, nil
 	}
+	if strings.TrimSpace(specCode) == "hkmo_pass" {
+		useWatermark = false
+		if len(availableColors) > 1 {
+			availableColors = []string{availableColors[0]}
+		} else if len(availableColors) == 0 {
+			availableColors = []string{"white"}
+		}
+	}
 	if !useWatermark && s.UseWatermark {
 		useWatermark = true
 	}

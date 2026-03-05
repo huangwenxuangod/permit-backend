@@ -362,6 +362,9 @@ func (s *Server) handleSpecs(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range items {
 		if items[i].ItemID == 0 {
+			if id := resolveItemIDBySize(items[i].WidthPx, items[i].HeightPx, items[i].DPI); id != 0 {
+				items[i].ItemID = id
+			}
 			preferred := s.preferredZJZName(items[i].Code, items[i].Name)
 			if preferred != "" {
 				if id, err := s.resolveItemID(preferred); err == nil {
@@ -835,7 +838,9 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	itemID := req.ItemID
 	preferredName := s.preferredZJZName(spec.Code, spec.Name)
 	if itemID == 0 {
-		if id, err := s.resolveIDCardItemID(preferredName); err == nil && id != 0 {
+		if id := resolveItemIDBySize(req.WidthPx, req.HeightPx, req.DPI); id != 0 {
+			itemID = id
+		} else if id, err := s.resolveIDCardItemID(preferredName); err == nil && id != 0 {
 			itemID = id
 		} else if id, err := s.resolveItemID(preferredName); err == nil {
 			itemID = id
@@ -1607,6 +1612,24 @@ func (s *Server) preferredZJZName(code, name string) string {
 		return "保安证"
 	default:
 		return strings.TrimSpace(name)
+	}
+}
+
+func resolveItemIDBySize(width, height, dpi int) int {
+	if dpi != 300 {
+		return 0
+	}
+	switch {
+	case width == 295 && height == 413:
+		return 1
+	case width == 413 && height == 579:
+		return 2
+	case width == 390 && height == 567:
+		return 4
+	case width == 260 && height == 378:
+		return 6
+	default:
+		return 0
 	}
 }
 

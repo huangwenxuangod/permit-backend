@@ -1624,10 +1624,20 @@ func resolveItemIDBySize(width, height, dpi int) int {
 		return 1
 	case width == 413 && height == 579:
 		return 2
+	case width == 413 && height == 531:
+		return 3
 	case width == 390 && height == 567:
 		return 4
 	case width == 260 && height == 378:
 		return 6
+	case width == 413 && height == 626:
+		return 77
+	case width == 649 && height == 991:
+		return 499
+	case width == 898 && height == 1205:
+		return 501
+	case width == 1050 && height == 1499:
+		return 500
 	default:
 		return 0
 	}

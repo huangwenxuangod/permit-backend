@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -91,14 +92,42 @@ func (s *TaskService) CreateTask(userID, specCode, sourceObjectKey string, itemI
 		_ = s.Repo.Put(t)
 		return t, nil
 	}
-	imageB64 := base64.StdEncoding.EncodeToString(raw)
+	imageB64, meta, err := normalizeIDCardImage(raw)
+	if err != nil {
+		t.Status = domain.StatusFailed
+		t.ErrorMsg = err.Error()
+		t.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.Put(t)
+		return t, nil
+	}
 	if !useWatermark && s.UseWatermark {
 		useWatermark = true
 	}
 	resp, err := s.callIDCard(context.Background(), itemID, imageB64, availableColors, enhance, beauty, useWatermark)
 	if err != nil {
 		t.Status = domain.StatusFailed
-		t.ErrorMsg = "zjz idcard error: " + err.Error()
+		colorSummary := strings.Join(availableColors, ",")
+		if colorSummary == "" {
+			colorSummary = "-"
+		}
+		t.ErrorMsg = fmt.Sprintf("zjz idcard error: %s (itemId=%d spec=%s %dx%d@%d colors=%s enhance=%d beauty=%d watermark=%t image=%s %dx%d size=%dB output=%dB b64=%d)",
+			err.Error(),
+			itemID,
+			specCode,
+			width,
+			height,
+			dpi,
+			colorSummary,
+			enhance,
+			beauty,
+			useWatermark,
+			meta.Format,
+			meta.Width,
+			meta.Height,
+			meta.SizeBytes,
+			meta.OutputBytes,
+			meta.EncodedBytes,
+		)
 		t.UpdatedAt = time.Now().UTC()
 		_ = s.Repo.Put(t)
 		return t, nil
@@ -178,7 +207,7 @@ func (s *TaskService) CreateReceiptTask(userID, specCode, sourceObjectKey string
 		_ = s.Repo.Put(t)
 		return t, nil
 	}
-	imageB64, err := normalizeIDCardImage(raw)
+	imageB64, _, err := normalizeIDCardImage(raw)
 	if err != nil {
 		t.Status = domain.StatusFailed
 		t.ErrorMsg = err.Error()
@@ -395,13 +424,26 @@ func (s *TaskService) callIDCard(ctx context.Context, itemID int, imageBase64 st
 	return s.ZJZ.IDCardAll(ctx, itemID, imageBase64, colors, enhance, beauty)
 }
 
-func normalizeIDCardImage(raw []byte) (string, error) {
-	im, _, err := image.Decode(bytes.NewReader(raw))
+type imageMeta struct {
+	Format       string
+	Width        int
+	Height       int
+	SizeBytes    int
+	OutputBytes  int
+	EncodedBytes int
+}
+
+func normalizeIDCardImage(raw []byte) (string, imageMeta, error) {
+	meta := imageMeta{SizeBytes: len(raw)}
+	im, format, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
-		return "", ErrBadRequest("invalid image")
+		return "", meta, ErrBadRequest("invalid image")
 	}
 	bounds := im.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
+	meta.Format = format
+	meta.Width = w
+	meta.Height = h
 	maxDim := 6000
 	if w > maxDim || h > maxDim {
 		scale := math.Min(float64(maxDim)/float64(w), float64(maxDim)/float64(h))
@@ -424,14 +466,17 @@ func normalizeIDCardImage(raw []byte) (string, error) {
 		im = dst
 	}
 	if len(raw) <= 5<<20 && w <= maxDim && h <= maxDim {
-		return base64.StdEncoding.EncodeToString(raw), nil
+		meta.OutputBytes = len(raw)
+		b64 := base64.StdEncoding.EncodeToString(raw)
+		meta.EncodedBytes = len(b64)
+		return b64, meta, nil
 	}
 	quality := 85
 	var out bytes.Buffer
 	for {
 		out.Reset()
 		if err := jpeg.Encode(&out, im, &jpeg.Options{Quality: quality}); err != nil {
-			return "", err
+			return "", meta, err
 		}
 		if out.Len() <= 5<<20 || quality <= 40 {
 			break
@@ -439,9 +484,12 @@ func normalizeIDCardImage(raw []byte) (string, error) {
 		quality -= 15
 	}
 	if out.Len() > 5<<20 {
-		return "", ErrBadRequest("image too large, please upload <=5MB")
+		return "", meta, ErrBadRequest("image too large, please upload <=5MB")
 	}
-	return base64.StdEncoding.EncodeToString(out.Bytes()), nil
+	meta.OutputBytes = out.Len()
+	b64 := base64.StdEncoding.EncodeToString(out.Bytes())
+	meta.EncodedBytes = len(b64)
+	return b64, meta, nil
 }
 
 func (s *TaskService) downloadImage(u string) ([]byte, error) {

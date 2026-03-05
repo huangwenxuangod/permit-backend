@@ -3,7 +3,7 @@ package zjzapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -123,6 +123,31 @@ type UserAppResp struct {
 	Data map[string]any `json:"data"`
 }
 
+type APIError struct {
+	Path   string
+	Status int
+	Code   int
+	Msg    string
+	Body   string
+}
+
+func (e *APIError) Error() string {
+	if e == nil {
+		return "zjz error"
+	}
+	if e.Status != 0 {
+		body := strings.TrimSpace(e.Body)
+		if body == "" {
+			return fmt.Sprintf("zjz http error: status=%d path=%s", e.Status, e.Path)
+		}
+		return fmt.Sprintf("zjz http error: status=%d path=%s body=%s", e.Status, e.Path, body)
+	}
+	if strings.TrimSpace(e.Msg) != "" {
+		return fmt.Sprintf("zjz api error: code=%d msg=%s path=%s", e.Code, e.Msg, e.Path)
+	}
+	return fmt.Sprintf("zjz api error: code=%d path=%s", e.Code, e.Path)
+}
+
 func (c *Client) IDCardMake(ctx context.Context, itemID int, imageBase64 string, colors []string, enhance, beauty int) (IDCardResp, error) {
 	values := url.Values{}
 	values.Set("key", c.Key)
@@ -142,7 +167,7 @@ func (c *Client) IDCardMake(ctx context.Context, itemID int, imageBase64 string,
 		return out, err
 	}
 	if out.Code != 0 {
-		return out, errors.New(out.Msg)
+		return out, &APIError{Path: "/idcardv5/make", Code: out.Code, Msg: out.Msg}
 	}
 	return out, nil
 }
@@ -166,7 +191,7 @@ func (c *Client) IDCardAll(ctx context.Context, itemID int, imageBase64 string, 
 		return out, err
 	}
 	if out.Code != 0 {
-		return out, errors.New(out.Msg)
+		return out, &APIError{Path: "/idcardv5/all", Code: out.Code, Msg: out.Msg}
 	}
 	return out, nil
 }
@@ -181,7 +206,7 @@ func (c *Client) ReceiptMake(ctx context.Context, itemID int, imageBase64 string
 		return out, err
 	}
 	if out.Code != 0 {
-		return out, errors.New(out.Msg)
+		return out, &APIError{Path: "/receipt/make", Code: out.Code, Msg: out.Msg}
 	}
 	return out, nil
 }
@@ -214,7 +239,7 @@ func (c *Client) AIPhotoMake(ctx context.Context, templateID string, images []st
 		return out, err
 	}
 	if out.Code != 0 {
-		return out, errors.New(out.Msg)
+		return out, &APIError{Path: "/ai-photo/make", Code: out.Code, Msg: out.Msg}
 	}
 	return out, nil
 }
@@ -241,7 +266,7 @@ func (c *Client) FaceEnhance(ctx context.Context, imageBase64, size string) (Fac
 		return out, err
 	}
 	if out.Code != 0 {
-		return out, errors.New(out.Msg)
+		return out, &APIError{Path: "/face/enhance", Code: out.Code, Msg: out.Msg}
 	}
 	return out, nil
 }
@@ -254,7 +279,7 @@ func (c *Client) ItemList(ctx context.Context) (ItemListResp, error) {
 		return out, err
 	}
 	if out.Code != 0 {
-		return out, errors.New(out.Msg)
+		return out, &APIError{Path: "/item/list", Code: out.Code, Msg: out.Msg}
 	}
 	return out, nil
 }
@@ -268,7 +293,7 @@ func (c *Client) ItemGet(ctx context.Context, itemID int) (ItemGetResp, error) {
 		return out, err
 	}
 	if out.Code != 0 {
-		return out, errors.New(out.Msg)
+		return out, &APIError{Path: "/item/get", Code: out.Code, Msg: out.Msg}
 	}
 	return out, nil
 }
@@ -319,7 +344,7 @@ func (c *Client) postForm(ctx context.Context, path string, values url.Values, o
 		return err
 	}
 	if resp.StatusCode >= 400 {
-		return errors.New(string(body))
+		return &APIError{Path: path, Status: resp.StatusCode, Body: string(body)}
 	}
 	if out == nil {
 		return nil

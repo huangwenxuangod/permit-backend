@@ -198,6 +198,7 @@ func (s *Server) routesGin() {
 	s.engine.POST("/api/pay/douyin", func(c *gin.Context) { s.handlePayDouyin(c.Writer, c.Request) })
 	s.engine.POST("/api/pay/callback", func(c *gin.Context) { s.handlePayCallback(c.Writer, c.Request) })
 	s.engine.POST("/api/pay/wechat/notify", func(c *gin.Context) { s.handlePayWechatNotify(c.Writer, c.Request) })
+	s.engine.GET("/api/zjz/debug", func(c *gin.Context) { s.handleZJZDebug(c.Writer, c.Request) })
 	s.engine.POST("/api/zjz/item/list", func(c *gin.Context) { s.handleZJZItemList(c.Writer, c.Request) })
 	s.engine.POST("/api/zjz/item/get", func(c *gin.Context) { s.handleZJZItemGet(c.Writer, c.Request) })
 	s.engine.POST("/api/zjz/receipt/make", func(c *gin.Context) { s.handleZJZReceiptMake(c.Writer, c.Request) })
@@ -993,6 +994,18 @@ func (s *Server) handleGenerateLayout(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleZJZDebug(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only GET accepted")
+		return
+	}
+	s.json(w, r, http.StatusOK, map[string]any{
+		"baseURL":            s.cfg.ZJZBaseURL,
+		"keyMasked":          maskSecret(s.cfg.ZJZKey),
+		"accessTokenMasked":  maskSecret(s.cfg.ZJZAccessToken),
+	})
+}
+
 func (s *Server) handleZJZItemList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.err(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "only POST accepted")
@@ -1613,6 +1626,17 @@ func (s *Server) preferredZJZName(code, name string) string {
 	default:
 		return strings.TrimSpace(name)
 	}
+}
+
+func maskSecret(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if len(v) <= 6 {
+		return strings.Repeat("*", len(v))
+	}
+	return v[:3] + strings.Repeat("*", len(v)-6) + v[len(v)-3:]
 }
 
 func resolveItemIDBySize(width, height, dpi int) int {
